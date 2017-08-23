@@ -6561,6 +6561,8 @@ static int __init binder_init(void)
 	if (ret)
 		return ret;
 
+	binder_alloc_shrinker_init();
+
 	atomic_set(&binder_transaction_log.cur, ~0U);
 	atomic_set(&binder_transaction_log_failed.cur, ~0U);
 

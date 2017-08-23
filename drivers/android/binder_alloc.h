@@ -22,7 +22,6 @@
 #include <linux/vmalloc.h>
 #include <linux/slab.h>
 #include <linux/list_lru.h>
-#include <uapi/linux/android/binder.h>
 
 extern struct list_lru binder_alloc_lru;
 struct binder_transaction;
@@ -67,6 +66,18 @@ struct binder_buffer {
 	size_t extra_buffers_size;
 	void __user *user_data;
 	int    pid;
+};
+
+/**
+ * struct binder_lru_page - page object used for binder shrinker
+ * @page_ptr: pointer to physical page in mmap'd space
+ * @lru:      entry in binder_alloc_lru
+ * @alloc:    binder_alloc for a proc
+ */
+struct binder_lru_page {
+	struct list_head lru;
+	struct page *page_ptr;
+	struct binder_alloc *alloc;
 };
 
 /**
@@ -140,7 +151,6 @@ extern struct binder_buffer *binder_alloc_new_buf(struct binder_alloc *alloc,
 						  int pid);
 extern void binder_alloc_init(struct binder_alloc *alloc);
 void binder_alloc_shrinker_init(void);
-extern void binder_alloc_shrinker_exit(void);
 extern void binder_alloc_vma_close(struct binder_alloc *alloc);
 extern struct binder_buffer *
 binder_alloc_prepare_to_free(struct binder_alloc *alloc,
