@@ -1025,34 +1025,6 @@ void pm_print_active_wakeup_sources(void)
 }
 EXPORT_SYMBOL_GPL(pm_print_active_wakeup_sources);
 
-#ifdef OPLUS_FEATURE_POWERINFO_STANDBY
-//Nanwei.Deng@BSP.Power.Basic, 2020/07/27, add for wakelock profiler
-void get_ws_listhead(struct list_head **ws)
-{
-	if (ws)
-		*ws = &wakeup_sources;
-}
-
-void wakeup_srcu_read_lock(int *srcuidx)
-{
-	*srcuidx = srcu_read_lock(&wakeup_srcu);
-}
-
-void wakeup_srcu_read_unlock(int srcuidx)
-{
-	srcu_read_unlock(&wakeup_srcu, srcuidx);
-}
-
-bool ws_all_release(void)
-{
-	unsigned int cnt, inpr;
-
-	pr_info("Enter: %s\n", __func__);
-	split_counters(&cnt, &inpr);
-	return (!inpr) ? true : false;
-}
-#endif /* OPLUS_FEATURE_POWERINFO_STANDBY */
-
 /**
  * pm_wakeup_pending - Check if power transition in progress should be aborted.
  *
