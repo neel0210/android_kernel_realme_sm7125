@@ -1078,13 +1078,7 @@ bool pm_wakeup_pending(void)
 	spin_unlock_irqrestore(&events_lock, flags);
 
 	if (ret) {
-		#ifndef OPLUS_FEATURE_POWERINFO_STANDBY_DEBUG
-		//Nanwei.Deng@BSP.Power.Basic, 2020/07/27, add for wakelock profiler
-		pr_debug("PM: Wakeup pending, aborting suspend\n");
-		#else
-		pr_info("PM: Wakeup pending, aborting suspend\n");
-		wakeup_reasons_statics(IRQ_NAME_ABORT, WS_CNT_ABORT);
-		#endif /* OPLUS_FEATURE_POWERINFO_STANDBY_DEBUG */
+ 		pr_debug("PM: Wakeup pending, aborting suspend\n");
 		pm_print_active_wakeup_sources();
 		pm_get_active_wakeup_sources(suspend_abort,
 					     MAX_SUSPEND_ABORT_LEN);
