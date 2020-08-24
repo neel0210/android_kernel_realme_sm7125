@@ -38,6 +38,10 @@
 #include "../base.h"
 #include "power.h"
 
+#ifdef CONFIG_BOEFFLA_WL_BLOCKER
+void pm_print_active_wakeup_sources(void);
+#endif
+
 typedef int (*pm_callback_t)(struct device *);
 
 /*
