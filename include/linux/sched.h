@@ -1434,6 +1434,9 @@ struct task_struct {
 	unsigned in_binder:1;
 	unsigned in_epoll:1;
 #endif
+#ifdef CONFIG_ANDROID_SIMPLE_LMK
+	struct task_struct		*simple_lmk_next;
+#endif
 #endif /* OPLUS_FEATURE_HEALTHINFO */
 
 	/*
