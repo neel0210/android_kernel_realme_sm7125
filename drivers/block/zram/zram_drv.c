@@ -41,7 +41,14 @@ static DEFINE_IDR(zram_index_idr);
 static DEFINE_MUTEX(zram_index_mutex);
 
 static int zram_major;
-static const char *default_compressor = CONFIG_ZRAM_DEFAULT_COMP_ALGORITHM;
+#if IS_ENABLED(CONFIG_CRYPTO_ZSTD)
+static const char *default_compressor = "zstd";
+#else
+static const char *default_compressor = "lz4";
+#endif
+#ifdef CONFIG_ZRAM_COMP_WRITEBACK
+static int zram_wb_mode = COMP_STORE;
+#endif
 
 /* Module params (documentation at end) */
 static unsigned int num_devices = 1;
