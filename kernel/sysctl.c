@@ -146,6 +146,9 @@ unsigned int sysctl_fg_io_opt = 1;
 #ifdef OPLUS_FEATURE_EDTASK_IMPROVE
 /* Chuck.Huang@Power.basic, 2020-09-03, Add for improving ed task migration */
 int sysctl_ed_task_enabled = 1;
+
+#ifdef CONFIG_INCREASE_MAXIMUM_SWAPPINESS
+static int max_swappiness = 300;
 #endif
 #ifdef CONFIG_OPLUS_MM_HACKS
 extern int direct_vm_swappiness;
