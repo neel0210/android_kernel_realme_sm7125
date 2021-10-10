@@ -48,8 +48,6 @@
 #include "adsprpc_shared.h"
 #include <soc/qcom/ramdump.h>
 #include <linux/debugfs.h>
-#include <linux/stat.h>
-#include <linux/cpumask.h>
 
 #define TZ_PIL_PROTECT_MEM_SUBSYS_ID 0x0C
 #define TZ_PIL_CLEAR_PROTECT_MEM_SUBSYS_ID 0x0D
