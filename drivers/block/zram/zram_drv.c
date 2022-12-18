@@ -326,6 +326,155 @@ static ssize_t idle_store(struct device *dev,
 }
 
 #ifdef CONFIG_ZRAM_WRITEBACK
+#ifdef CONFIG_ZRAM_LRU_WRITEBACK
+static int zram_wbd(void *);
+static struct zram *g_zram;
+static bool is_app_launch;
+
+#define F2FS_IOCTL_MAGIC	0xf5
+#define F2FS_IOC_SET_PIN_FILE	_IOW(F2FS_IOCTL_MAGIC, 13, __u32)
+#define F2FS_SET_PIN_FILE	1
+static int zram_pin_backing_file(struct zram *zram)
+{
+	struct loop_device *lo = zram->bdev->bd_disk->private_data;
+	struct file *file = lo->lo_backing_file;
+	unsigned int cmd = F2FS_IOC_SET_PIN_FILE;
+	int __user *buf;
+	int set = F2FS_SET_PIN_FILE;
+	int ret;
+
+	if (file->f_inode->i_sb->s_magic != F2FS_SUPER_MAGIC ){
+		pr_info("%s skipped due to loop_device is not F2FS\n", __func__);
+		return 0;
+	}
+
+	buf = compat_alloc_user_space(sizeof(*buf));
+	if (!buf) {
+		pr_info("%s failed to compat_alloc_user_space\n", __func__);
+		return -ENOMEM;
+	}
+	copy_to_user(buf, &set, sizeof(int));
+	ret = file->f_op->unlocked_ioctl(file, cmd, (unsigned long)buf);
+	pr_info("%s ioctl to pin file returned %d\n", __func__, ret);
+
+	return ret;
+}
+
+static void fallocate_block(struct zram *zram, unsigned long blk_idx)
+{
+	struct block_device *bdev = zram->bdev;
+
+	if (!bdev)
+		return;
+
+	mutex_lock(&zram->blk_bitmap_lock);
+	/* check 2MB block bitmap. if unset, fallocate 2MB block at once */
+	if (!test_and_set_bit(blk_idx / NR_FALLOC_PAGES, zram->blk_bitmap)) {
+		struct loop_device *lo = bdev->bd_disk->private_data;
+		struct file *file = lo->lo_backing_file;
+		loff_t pos = (blk_idx & FALLOC_ALIGN_MASK) << PAGE_SHIFT;
+		loff_t len = NR_FALLOC_PAGES << PAGE_SHIFT;
+		int mode = FALLOC_FL_KEEP_SIZE;
+		int ret;
+
+		file_start_write(file);
+		ret = file->f_op->fallocate(file, mode, pos, len);
+		if (ret)
+			pr_err("%s pos %lx failed %d\n", __func__, pos, ret);
+		file_end_write(file);
+	}
+	mutex_unlock(&zram->blk_bitmap_lock);
+}
+
+static int init_lru_writeback(struct zram *zram)
+{
+	struct sched_param param = { .sched_priority = 0 };
+	int ret = 0;
+	int bitmap_sz;
+
+	init_waitqueue_head(&zram->wbd_wait);
+	zram->wb_table = kvzalloc(sizeof(u8) * zram->nr_pages, GFP_KERNEL);
+	if (!zram->wb_table) {
+		ret = -ENOMEM;
+		return ret;
+	}
+	/* bitmap for 2MB block */
+	bitmap_sz = (BITS_TO_LONGS(zram->nr_pages) * sizeof(long)) / NR_FALLOC_PAGES;
+	zram->blk_bitmap = kvzalloc(bitmap_sz, GFP_KERNEL);
+	if (!zram->blk_bitmap) {
+		ret = -ENOMEM;
+		goto out;
+	}
+	if (zram_pin_backing_file(zram)) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	bitmap_sz = BITS_TO_LONGS(zram->nr_pages) * sizeof(long) / NR_ZWBS;
+	/* backing dev should be large enough for chunk writeback */
+	if (!bitmap_sz)
+		return -EINVAL;
+	zram->chunk_bitmap = kvzalloc(bitmap_sz, GFP_KERNEL);
+	if (!zram->chunk_bitmap) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	zram->wbd = kthread_run(zram_wbd, zram, "%s_wbd", zram->disk->disk_name);
+	if (IS_ERR(zram->wbd)) {
+		ret = PTR_ERR(zram->wbd);
+		goto out;
+	}
+
+	g_zram = zram;
+	zram->wb_limit_enable = true;
+	sched_setscheduler(zram->wbd, SCHED_IDLE, &param);
+
+	return ret;
+out:
+	if (zram->chunk_bitmap) {
+		kvfree(zram->chunk_bitmap);
+		zram->chunk_bitmap = NULL;
+	}
+	if (zram->blk_bitmap) {
+		kvfree(zram->blk_bitmap);
+		zram->blk_bitmap = NULL;
+	}
+	kvfree(zram->wb_table);
+	zram->wb_table = NULL;
+	return ret;
+}
+
+static void stop_lru_writeback(struct zram *zram)
+{
+	if (!IS_ERR_OR_NULL(zram->wbd)) {
+		g_zram = NULL;
+		kthread_stop(zram->wbd);
+		zram->wbd = NULL;
+	}
+}
+
+static void deinit_lru_writeback(struct zram *zram)
+{
+	unsigned long flags;
+	u8 *wb_table_tmp = zram->wb_table;
+
+	stop_lru_writeback(zram);
+	if (zram->chunk_bitmap) {
+		kvfree(zram->chunk_bitmap);
+		zram->chunk_bitmap = NULL;
+	}
+	if (zram->blk_bitmap) {
+		kvfree(zram->blk_bitmap);
+		zram->blk_bitmap = NULL;
+	}
+	spin_lock_irqsave(&zram->wb_table_lock, flags);
+	zram->wb_table = NULL;
+	spin_unlock_irqrestore(&zram->wb_table_lock, flags);
+	kvfree(wb_table_tmp);
+}
+#endif
+
 static ssize_t writeback_limit_enable_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t len)
 {
