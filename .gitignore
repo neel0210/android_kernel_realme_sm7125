@@ -130,3 +130,22 @@ kernel/configs/android-*.cfg
 #Ignoring Android.bp link file
 #
 Android.bp
+out/
+*.zip
+toolchains/
+toolchain/
+clang/
+gcc/
+KKRT/
+linaro/
+gcc32/
+test.sh
+neel.sh
+home.sh
+make.sh
+start.sh
+test.sh
+neel.sh
+NEEL/
+error.log
+#################
