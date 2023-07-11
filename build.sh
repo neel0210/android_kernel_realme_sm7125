@@ -9,9 +9,15 @@
 ##----------------------------------------------------------##
 
 # Basic Information
-KERNEL_DEFCONFIG=soul_defconfig
+KERNEL_DEFCONFIG=atoll_defconfig
 
 DEVICE=RMX2061
+
+VERSION=Rengoku
+
+export KBUILD_BUILD_USER=DemonSlayer
+
+export KBUILD_BUILD_HOST=Hell
 
 DATE=$(TZ=Asia/Kolkata date +"%Y%m%d-%T")
 
@@ -19,7 +25,7 @@ TANGGAL=$(date +"%F%S")
 
 ANYKERNEL3_DIR=$PWD/AnyKernel3/
 
-FINAL_KERNEL_ZIP=GenZSouL-${DEVICE}-${TANGGAL}.zip
+FINAL_KERNEL_ZIP=KKRT-${VERSION}-${DEVICE}-${TANGGAL}.zip
 
 # Verbose Build
 VERBOSE=0
@@ -42,7 +48,9 @@ fi
 
 # Speed up build process
 MAKE="./makeparallel"
-
+make clean
+rm -rf out
+rm -rf *.zip
 ##----------------------------------------------------------##
 
 # Start build
@@ -57,11 +65,6 @@ nocol='\033[0m'
 echo -e "$red***********************************************"
 echo "          STARTING THE ENGINE         "
 echo -e "***********************************************$nocol"
-echo -e "$yellow***********************************************"
-echo "         CLEANING, PLEASE WAIT A BIT         "
-echo -e "***********************************************$nocol"
-mkdir -p out
-make O=out clean
 
 echo "**** Kernel defconfig is set to $KERNEL_DEFCONFIG ****"
 echo -e "$blue***********************************************"
@@ -137,7 +140,6 @@ rm -rf $ANYKERNEL3_DIR/$FINAL_KERNEL_ZIP
 rm -rf $ANYKERNEL3_DIR/Image.gz
 rm -rf $ANYKERNEL3_DIR/dtbo.img
 rm -rf $ANYKERNEL3_DIR/dtb.img
-rm -rf out/
 
 sha1sum $FINAL_KERNEL_ZIP
 
@@ -162,6 +164,7 @@ for i in *.zip
 do
 curl -F "document=@$i" --form-string "caption=" "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument?chat_id=${CHAT_ID}&parse_mode=HTML"
 done
+
 
 echo -e "$cyan***********************************************"
 echo "          All done !!!         "
