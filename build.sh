@@ -8,6 +8,12 @@
 
 ##----------------------------------------------------------##
 
+# Cache
+export USE_CCACHE=1
+export CCACHE_EXEC=/usr/bin/ccache
+ccache -M 0
+ccache -F 0
+
 # Basic Information
 KERNEL_DEFCONFIG=atoll_defconfig
 
