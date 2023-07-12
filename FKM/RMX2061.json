@@ -1,0 +1,13 @@
+{
+  "kernel": {
+    "name": "RENGOKU-RMX2061 by Neel0210",
+    "version": "RENGOKU",
+    "link": "https://github.com/neel0210/Rengoku_kernel_realme_RMX2061/releases/download/RENGOKU/KKRT-Rengoku-RMX2061-2023-07-1250.zip",
+    "changelog_url": "https://raw.githubusercontent.com/neel0210/Rengoku_kernel_realme_RMX2061/tree/rengoku/FKM/changelog.txt",
+    "date": "2023-07-12",
+    "sha1": "be7175ebb5ec0f0585f82786ec1c29d5e2fdff77"
+  },
+  "support": {
+    "link": "https://t.me/neelscosmos"
+  }
+}
