@@ -94,7 +94,6 @@
 #ifdef CONFIG_LOCKUP_DETECTOR
 #include <linux/nmi.h>
 #endif
-#if defined(CONFIG_SYSCTL)
 
 #if defined(CONFIG_OPLUS_FEATURE_HUNG_TASK_ENHANCE) && defined(CONFIG_OPLUS_FEATURE_DEATH_HEALER)
 #include <soc/oplus/system/hung_task_enhance.h>
