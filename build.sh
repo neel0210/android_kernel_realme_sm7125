@@ -9,10 +9,11 @@
 ##----------------------------------------------------------##
 
 # Cache
+export CCACHE_EXEC="/usr/bin/ccache"
 export USE_CCACHE=1
-export CCACHE_EXEC=/usr/bin/ccache
-ccache -M 0
-ccache -F 0
+ccache -M 50G
+export CCACHE_COMPRESS=1
+export CCACHE_DIR=/home/neel/ccache/.ccache
 
 # Basic Information
 KERNEL_DEFCONFIG=atoll_defconfig
