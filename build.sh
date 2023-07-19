@@ -20,7 +20,7 @@ KERNEL_DEFCONFIG=atoll_defconfig
 
 DEVICE=RMX2061
 
-VERSION=Rengoku
+VERSION=TENGEN-T1
 
 export KBUILD_BUILD_USER=DemonSlayer
 
