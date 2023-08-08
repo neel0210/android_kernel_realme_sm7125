@@ -338,18 +338,6 @@ struct vtime {
 	u64			gtime;
 };
 
-/*
- * Utilization clamp constraints.
- * @UCLAMP_MIN:	Minimum utilization
- * @UCLAMP_MAX:	Maximum utilization
- * @UCLAMP_CNT:	Utilization clamp constraints count
- */
-enum uclamp_id {
-	UCLAMP_MIN = 0,
-	UCLAMP_MAX,
-	UCLAMP_CNT
-};
-
 struct sched_param {
 	int sched_priority;
 };
