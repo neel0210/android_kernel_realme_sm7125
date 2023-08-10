@@ -20,7 +20,7 @@ KERNEL_DEFCONFIG=atoll_defconfig
 
 DEVICE=RMX2061
 
-VERSION=TENGEN-T2
+VERSION=MUICHIRO-M1
 
 export KBUILD_BUILD_USER=Neel0210
 
@@ -40,14 +40,14 @@ VERBOSE=0
 
 # Exports
 
-export PATH="$HOME/proton/bin:$PATH"
+export PATH="$HOME/KKRT_TC/proton/bin:$PATH"
 export ARCH=arm64
 export SUBARCH=arm64
-export KBUILD_COMPILER_STRING="$($HOME/proton/bin/clang --version | head -n 1 | perl -pe 's/\(http.*?\)//gs' | sed -e 's/  */ /g' -e 's/[[:space:]]*$//')"
+export KBUILD_COMPILER_STRING="$($HOME/KKRT_TC/proton/bin/clang --version | head -n 1 | perl -pe 's/\(http.*?\)//gs' | sed -e 's/  */ /g' -e 's/[[:space:]]*$//')"
 
-if ! [ -d "$HOME/proton" ]; then
+if ! [ -d "$HOME/KKRT_TC/proton" ]; then
 echo "Proton clang not found! Cloning..."
-if ! git clone -q https://github.com/kdrag0n/proton-clang --depth=1 --single-branch ~/proton; then
+if ! git clone -q https://github.com/kdrag0n/proton-clang --depth=1 --single-branch ~/KKRT_TC/proton; then
 echo "Cloning failed! Aborting..."
 exit 1
 fi
@@ -87,7 +87,7 @@ make -j$(nproc --all) O=out \
                       OBJCOPY=llvm-objcopy \
                       OBJDUMP=llvm-objdump \
                       STRIP=llvm-strip \
-			          V=$VERBOSE 2>&1 | tee error.log                      
+                      V=$VERBOSE 2>&1 | tee error.log
 
 ##----------------------------------------------------------##
 
