@@ -8,56 +8,48 @@
 
 ##----------------------------------------------------------##
 
+SRC="$(pwd)"
+
 # Cache
 export CCACHE_EXEC="/usr/bin/ccache"
 export USE_CCACHE=1
-ccache -M 50G
+ccache -M 5G
 export CCACHE_COMPRESS=1
-export CCACHE_DIR=/home/neel/ccache/.ccache
+export CCACHE_DIR=$(whoami)/ccache/.ccache
 
-# Basic Information
+# Config
 KERNEL_DEFCONFIG=atoll_defconfig
 
+# Kernel version
 DEVICE=RMX2061
+VERSION=MUICHIRO-M1
 
-VERSION=TENGEN-T2.5
-
-export KBUILD_BUILD_USER=Neel0210
-
-export KBUILD_BUILD_HOST=MACOS-MOJAVE
-
+# Zipping
 DATE=$(TZ=Asia/Kolkata date +"%Y%m%d-%T")
-
 TANGGAL=$(date +"%F%S")
-
-ANYKERNEL3_DIR=$PWD/AnyKernel3/
-
+ANYKERNEL3_DIR=AnyKernel3
 FINAL_KERNEL_ZIP=KKRT-${VERSION}-${DEVICE}-${TANGGAL}.zip
 
-# Verbose Build
-VERBOSE=0
 ##----------------------------------------------------------##
 
 # Exports
-
-export PATH="$HOME/proton/bin:$PATH"
+export PATH="$SRC/proton/bin:$PATH"
 export ARCH=arm64
 export SUBARCH=arm64
-export KBUILD_COMPILER_STRING="$($HOME/proton/bin/clang --version | head -n 1 | perl -pe 's/\(http.*?\)//gs' | sed -e 's/  */ /g' -e 's/[[:space:]]*$//')"
+export KBUILD_COMPILER_STRING="$($SRC/proton/bin/clang --version | head -n 1 | perl -pe 's/\(http.*?\)//gs' | sed -e 's/  */ /g' -e 's/[[:space:]]*$//')"
 
-if ! [ -d "$HOME/proton" ]; then
+if ! [ -d "$SRC/proton" ]; then
 echo "Proton clang not found! Cloning..."
-if ! git clone -q https://github.com/kdrag0n/proton-clang --depth=1 --single-branch ~/proton; then
+if ! git clone -q https://github.com/kdrag0n/proton-clang --depth=1 --single-branch $SRC/proton; then
 echo "Cloning failed! Aborting..."
 exit 1
 fi
 fi
 
-# Speed up build process
-MAKE="./makeparallel"
+# General cleanup
 make clean
-rm -rf out
 rm -rf *.zip
+rm -rf *.log
 ##----------------------------------------------------------##
 
 # Start build
@@ -75,7 +67,7 @@ echo -e "***********************************************$nocol"
 
 echo "**** Kernel defconfig is set to $KERNEL_DEFCONFIG ****"
 echo -e "$blue***********************************************"
-echo "          BUILDING Falcon-X KERNEL          "
+echo "          BUILDING KAKAROT KERNEL          "
 echo -e "***********************************************$nocol"
 make $KERNEL_DEFCONFIG O=out
 make -j$(nproc --all) O=out \
@@ -98,12 +90,11 @@ ls $PWD/out/arch/arm64/boot/Image.gz
 ls $PWD/out/arch/arm64/boot/dtbo.img
 ls $PWD/out/arch/arm64/boot/dtb.img
 
-       if ! [ -a "$PWD/out/arch/arm64/boot/Image.gz" ];
+       if ! [ -a "$SRC/out/arch/arm64/boot/Image.gz" ];
           then
               echo -e "$blue***********************************************"
               echo "          BUILD THROWS ERRORS         "
               echo -e "***********************************************$nocol"
-              rm -rf out/
               for i in *.log
               do
               curl -F "document=@$i" --form-string "caption=" "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument?chat_id=${CHAT_ID}&parse_mode=HTML"
@@ -119,14 +110,17 @@ ls $PWD/out/arch/arm64/boot/dtb.img
 
 ##----------------------------------------------------------##
 
-# Anykernel 3 time!!
 echo "**** Verifying AnyKernel3 Directory ****"
+
+if [ ! -d "$SRC/AnyKernel3" ];
+then
+   git clone --depth=1 https://github.com/neel0210/AnyKernel3.git -b MUICHIRO AnyKernel3
+else
+   echo " "
+fi
+
+# Anykernel 3 time!!
 ls $ANYKERNEL3_DIR
-echo "**** Removing leftovers ****"
-rm -rf $ANYKERNEL3_DIR/Image.gz
-rm -rf $ANYKERNEL3_DIR/dtbo.img
-rm -rf $ANYKERNEL3_DIR/dtb.img
-rm -rf $ANYKERNEL3_DIR/$FINAL_KERNEL_ZIP
 
 echo "**** Copying Image.gz & dtbo.img ****"
 cp $PWD/out/arch/arm64/boot/Image.gz $ANYKERNEL3_DIR/
@@ -143,10 +137,6 @@ echo -e "$yellow***********************************************"
 echo "         Done, here is your sha1         "
 echo -e "***********************************************$nocol"
 cd ..
-rm -rf $ANYKERNEL3_DIR/$FINAL_KERNEL_ZIP
-rm -rf $ANYKERNEL3_DIR/Image.gz
-rm -rf $ANYKERNEL3_DIR/dtbo.img
-rm -rf $ANYKERNEL3_DIR/dtb.img
 
 sha1sum $FINAL_KERNEL_ZIP
 
@@ -172,10 +162,10 @@ do
 curl -F "document=@$i" --form-string "caption=" "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument?chat_id=${CHAT_ID}&parse_mode=HTML"
 done
 
-
 echo -e "$cyan***********************************************"
 echo "          All done !!!         "
 echo -e "***********************************************$nocol"
+rm -rf $ANYKERNEL3_DIR
 ##----------------------------------------------------------##
 ##----------------------------------------------------------##
 ##----------------------------------------------------------##
