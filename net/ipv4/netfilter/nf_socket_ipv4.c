@@ -154,15 +154,6 @@ struct sock *nf_sk_lookup_slow_v4(struct net *net, const struct sk_buff *skb,
 			ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple.src.u.udp.port;
 	}
 #endif
-
-	if (sk)
-		refcount_inc(&sk->sk_refcnt);
-	else
-		sk = nf_socket_get_sock_v4(dev_net(skb->dev), data_skb, doff,
-					   protocol, saddr, daddr, sport,
-					   dport, indev);
-
-	return sk;
 }
 EXPORT_SYMBOL_GPL(nf_sk_lookup_slow_v4);
 
