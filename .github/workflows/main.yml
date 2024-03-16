@@ -30,8 +30,8 @@ jobs:
                     liblz4-tool libncurses5-dev libsdl1.2-dev libxml2 \
                     libxml2-utils lzop pngcrush schedtool \
                     squashfs-tools xsltproc zip zlib1g-dev \
-                    build-essential kernel-package libncurses5-dev \
-                    bzip2 git python expect \
+                    build-essential libncurses5-dev \
+                    bzip2 git expect \
                     gcc-aarch64-linux-gnu g++-aarch64-linux-gnu -y
                     curl https://raw.githubusercontent.com/akhilnarang/scripts/master/setup/android_build_env.sh | bash
 
