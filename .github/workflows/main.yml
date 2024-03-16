@@ -1,0 +1,99 @@
+name: KKRT Kernel Build
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build_kernel:
+    name: Build Kernel
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v2
+
+      - name: Install Dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y curl git make perl
+
+      - name: Clone Proton Clang
+        run: |
+          PROTON_PATH="proton"
+          git clone -q https://github.com/kdrag0n/proton-clang --depth=1 --single-branch "$PROTON_PATH"
+
+      - name: Set Environment Variables
+        run: |
+          PROTON_PATH="/home/itachi/proton"
+          export PATH="$PROTON_PATH/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export KBUILD_COMPILER_STRING="$($PROTON_PATH/bin/clang --version | head -n 1 | perl -pe 's/\(http.*?\)//gs' | sed -e 's/  */ /g' -e 's/[[:space:]]*$//')"
+
+      - name: Perform Clean Build
+        run: |
+          make clean
+          make mrproper
+          rm -rf *.zip
+          rm -rf *.log
+
+      - name: Build Kernel
+        run: |
+          KERNEL_DEFCONFIG=atoll_defconfig
+          make $KERNEL_DEFCONFIG O=out
+          make -j$(nproc --all) O=out \
+                                ARCH=arm64 \
+                                CC=clang \
+                                CROSS_COMPILE=aarch64-linux-gnu- \
+                                CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+                                NM=llvm-nm \
+                                OBJCOPY=llvm-objcopy \
+                                OBJDUMP=llvm-objdump \
+                                STRIP=llvm-strip \
+                                V=$VERBOSE 2>&1 | tee error.log
+
+      - name: Verify Kernel Build
+        run: |
+          ls $PWD/out/arch/arm64/boot/Image.gz
+          ls $PWD/out/arch/arm64/boot/dtbo.img
+          ls $PWD/out/arch/arm64/boot/dtb.img
+
+          if ! [ -a "$SRC/out/arch/arm64/boot/Image.gz" ]; then
+              for i in *.log; do
+                  curl -F "document=@$i" --form-string "caption=" "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendDocument?chat_id=${{ secrets.CHAT_ID }}&parse_mode=HTML"
+              done
+              rm -rf error.log
+              exit 1
+          else
+              rm -rf error.log
+          fi
+
+      - name: Zip Kernel Files
+        run: |
+          ANYKERNEL3_DIR=AnyKernel3
+          git clone --depth=1 https://github.com/neel0210/AnyKernel3.git -b MUICHIRO AnyKernel3
+          ls $ANYKERNEL3_DIR
+          cp $PWD/out/arch/arm64/boot/Image.gz $ANYKERNEL3_DIR/
+          cp $PWD/out/arch/arm64/boot/dtbo.img $ANYKERNEL3_DIR/
+          cp $PWD/out/arch/arm64/boot/dtb.img $ANYKERNEL3_DIR/
+          cd $ANYKERNEL3_DIR/
+          FINAL_KERNEL_ZIP=KKRT-${VERSION}-${DEVICE}-$(date +"%F%S").zip
+          zip -r9 "../$FINAL_KERNEL_ZIP" * -x README $FINAL_KERNEL_ZIP
+
+      - name: Compute SHA1 Checksum
+        run: |
+          cd ..
+          sha1sum $FINAL_KERNEL_ZIP
+
+      - name: Upload Kernel to Telegram
+        run: |
+          for i in *.zip; do
+              curl -F "document=@$i" --form-string "caption=" "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendDocument?chat_id=${{ secrets.CHAT_ID }}&parse_mode=HTML"
+          done
+
+      - name: Clean Up
+        run: |
+          rm -rf AnyKernel3
