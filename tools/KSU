@@ -1,0 +1,20 @@
+diff --git a/drivers/Kconfig b/drivers/Kconfig
+index c42b25f3255b..938b2540688f 100644
+--- a/drivers/Kconfig
++++ b/drivers/Kconfig
+@@ -236,4 +236,5 @@ source "drivers/nfc/p73-spi/Kconfig"
+ 
+ source "drivers/energy_model/Kconfig"
+ 
++source "drivers/kernelsu/Kconfig"
+ endmenu
+diff --git a/drivers/Makefile b/drivers/Makefile
+index a3feb2108afc..add263e896c9 100644
+--- a/drivers/Makefile
++++ b/drivers/Makefile
+@@ -195,3 +195,5 @@ obj-$(CONFIG_ESOC)              += esoc/
+ # GNSS driver
+ obj-$(CONFIG_GNSS_SIRF)		+= gnsssirf/
+ obj-$(CONFIG_GNSS)		+= gnss/
++
++obj-$(CONFIG_KSU) += kernelsu/
