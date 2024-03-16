@@ -13,7 +13,7 @@ FINAL_KERNEL_ZIP=""
 BUILD_START=""
 DEVICE=RMX2061
 VERSION=MUICHIRO-M1
-KERNEL_DEFCONFIG=atoll_defconfig  # Defining the configuration to be used for kernel build
+KERNEL_DEFCONFIG=atoll_defconfig
 
 # Function to clone Proton clang if not found
 clone_proton_clang() {
@@ -40,14 +40,23 @@ set_env_variables() {
 perform_clean_build() {
     echo "Performing clean build..."
     make clean
+    make mrproper
     rm -rf *.zip
     rm -rf *.log
 }
 
-# Function to build the kernel with KernelSU
+# Function to build with KernelSU
 build_with_kernelsu() {
     echo "Building with KernelSU..."
     curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash
+}
+
+# Function to ask whether to build with KernelSU
+ask_build_with_kernelsu() {
+    read -p "Do you want to build with KernelSU? (y/n): " build_kernelsu
+    if [[ $build_kernelsu =~ ^[Yy]$ ]]; then
+        build_with_kernelsu
+    fi
 }
 
 # Function to build the kernel
@@ -56,6 +65,7 @@ build_kernel() {
     echo -e "$blue***********************************************"
     echo "          BUILDING KAKAROT KERNEL          "
     echo -e "***********************************************$nocol"
+#    make mrproper && make clean
     make $KERNEL_DEFCONFIG O=out
     make -j$(nproc --all) O=out \
                           ARCH=arm64 \
@@ -158,24 +168,14 @@ ask_clean_build() {
     fi
 }
 
-# Function to ask whether to build with KernelSU
-ask_build_with_kernelsu() {
-    read -p "Do you want to build with KernelSU? (y/n): " build_kernelsu
-    if [[ $build_kernelsu =~ ^[Yy]$ ]]; then
-        build_with_kernelsu
-    else
-        build_kernel
-    fi
-}
-
 # Main function
 main() {
     clone_proton_clang
     set_env_variables
     ask_clean_build
-    ask_build_with_kernelsu
-
     BUILD_START=$(date +"%s")
+    ask_build_with_kernelsu
+    build_kernel
     verify_kernel_build
     zip_kernel_files
     compute_checksum
