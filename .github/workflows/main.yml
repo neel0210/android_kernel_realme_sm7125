@@ -19,6 +19,7 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y curl git make perl
+          sudo apt-get install bzip2 lib32stdc++6 libc6-dev-i386 libncurses5 jq -y
 
       - name: Clone Proton Clang
         run: |
