@@ -42,11 +42,13 @@ jobs:
 
       - name: Set Environment Variables
         run: |
-          PROTON_PATH="/home/proton"
+          PROTON_PATH="proton"
           export PATH="$PROTON_PATH/bin:$PATH"
           export ARCH=arm64
           export SUBARCH=arm64
           export KBUILD_COMPILER_STRING="$($PROTON_PATH/bin/clang --version | head -n 1 | perl -pe 's/\(http.*?\)//gs' | sed -e 's/  */ /g' -e 's/[[:space:]]*$//')"
+          wget -q "https://raw.githubusercontent.com/neel0210/android_kernel_realme_sm7125/M/tools/CC" -O CC.patch
+          git apply ./CC.patch
 
       - name: Perform Clean Build
         run: |
