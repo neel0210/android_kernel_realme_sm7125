@@ -38,7 +38,7 @@ jobs:
       - name: Clone Proton Clang
         run: |
           PROTON_PATH="proton"
-          git clone -q https://github.com/kdrag0n/proton-clang --depth=1 --single-branch "$PROTON_PATH"
+          git clone -q https://gitlab.com/ImSpiDy/azure-clang --depth=1 --single-branch "$PROTON_PATH"
 
       - name: Set Environment Variables
         run: |
