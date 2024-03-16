@@ -44,6 +44,12 @@ perform_clean_build() {
     rm -rf *.log
 }
 
+# Function to build the kernel with KernelSU
+build_with_kernelsu() {
+    echo "Building with KernelSU..."
+    curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash
+}
+
 # Function to build the kernel
 build_kernel() {
     echo "**** Kernel defconfig is set to $KERNEL_DEFCONFIG ****"
@@ -152,15 +158,13 @@ ask_clean_build() {
     fi
 }
 
-# Function to review build logs for warnings and errors
-review_logs() {
-    echo "Reviewing build logs for warnings and errors..."
-    if grep -q '\(warning\|error\):' error.log; then
-        echo -e "Build log contains warnings or errors:"
-        grep -E '(warning|error):' error.log
-        # You can add additional actions here, such as fixing warnings/errors automatically.
+# Function to ask whether to build with KernelSU
+ask_build_with_kernelsu() {
+    read -p "Do you want to build with KernelSU? (y/n): " build_kernelsu
+    if [[ $build_kernelsu =~ ^[Yy]$ ]]; then
+        build_with_kernelsu
     else
-        echo -e "No warnings or errors found in the build log."
+        build_kernel
     fi
 }
 
@@ -169,15 +173,14 @@ main() {
     clone_proton_clang
     set_env_variables
     ask_clean_build
+    ask_build_with_kernelsu
 
     BUILD_START=$(date +"%s")
-    build_kernel
     verify_kernel_build
     zip_kernel_files
     compute_checksum
     upload_kernel_to_telegram
     clean_up
-    review_logs
 
     BUILD_END=$(date +"%s")
     DIFF=$(($BUILD_END - $BUILD_START))
