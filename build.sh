@@ -48,7 +48,7 @@ perform_clean_build() {
 # Function to build with KernelSU
 build_with_kernelsu() {
     echo "Building with KernelSU..."
-    curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash
+    curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
 }
 
 # Function to ask whether to build with KernelSU
