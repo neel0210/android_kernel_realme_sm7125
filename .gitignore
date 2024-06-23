@@ -152,3 +152,6 @@ proton/
 AnyKernel3/
 #################
 
+build.log
+compilation.log
+SEND_TO_TG.txt
