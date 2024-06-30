@@ -150,7 +150,7 @@ build_kernel() {
     log "          BUILDING KAKAROT KERNEL          "
     log "*********************************************** $nocol"
     make $KERNEL_DEFCONFIG O=out
-    make -j$(nproc --all) O=out \
+    if ! make -j$(nproc --all) O=out \
                           ARCH=arm64 \
                           CC=clang \
                           CROSS_COMPILE=aarch64-linux-gnu- \
@@ -160,27 +160,46 @@ build_kernel() {
                           OBJCOPY=llvm-objcopy \
                           OBJDUMP=llvm-objdump \
                           STRIP=llvm-strip \
-                          V=$VERBOSE 2>&1 | tee $COMPILATION_LOG
+                          V=$VERBOSE 2>&1 | tee $COMPILATION_LOG; then
+        send_logs_and_exit
+    fi
+}
+
+# Function to send logs to Telegram and exit
+send_logs_and_exit() {
+    local caption=$(printf "<b>Branch Name:</b> %s\n<b>Last commit:</b> %s" "$(sanitize_for_telegram "$(git rev-parse --abbrev-ref HEAD)")" "$(sanitize_for_telegram "$(git log -1 --format=%B)")")
+    curl -F "document=@$COMPILATION_LOG" --form-string "caption=${caption}" "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument?chat_id=${CHAT_ID}&parse_mode=HTML"
+    exit 1
+}
+
+# Function to sanitize text for Telegram
+sanitize_for_telegram() {
+    local input="$1"
+    # Escape special characters for Telegram's HTML parse mode
+    echo "$input" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
 }
 
 # Function to verify kernel build
 verify_kernel_build() {
     log "$blue **** Verify Image.gz & dtbo.img **** $nocol"
-    ls $PWD/out/arch/arm64/boot/Image.gz
-    ls $PWD/out/arch/arm64/boot/dtbo.img
-    ls $PWD/out/arch/arm64/boot/dtb.img
-
-    if ! [ -a "$SRC/out/arch/arm64/boot/Image.gz" ]; then
-        log "$blue ***********************************************"
-        log "          BUILD THROWS ERRORS         "
-        log "*********************************************** $nocol"
-        curl -F "document=@$COMPILATION_LOG" --form-string "caption=<b>Branch Name:</b> $(git rev-parse --abbrev-ref HEAD)$'\n'<b>Last commit:</b> $(git log -1 --format=%B)" "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument?chat_id=${CHAT_ID}&parse_mode=HTML"
-        exit 1
-    else
-        log "$blue ***********************************************"
-        log "    KERNEL COMPILATION FINISHED, STARTING ZIPPING         "
-        log "*********************************************** $nocol"
+    if ! ls $PWD/out/arch/arm64/boot/Image.gz; then
+        send_logs_and_exit
     fi
+    log "$blue Image.gz found $nocol"
+
+    if ! ls $PWD/out/arch/arm64/boot/dtbo.img; then
+        send_logs_and_exit
+    fi
+    log "$blue dtbo.img found $nocol"
+
+    if ! ls $PWD/out/arch/arm64/boot/dtb.img; then
+        send_logs_and_exit
+    fi
+    log "$blue dtb.img found $nocol"
+
+    log "$blue ***********************************************"
+    log "    KERNEL COMPILATION FINISHED, STARTING ZIPPING         "
+    log "*********************************************** $nocol"
 }
 
 # Function to zip kernel files
@@ -190,16 +209,12 @@ zip_kernel_files() {
     if [ ! -d "$SRC/AnyKernel3" ]; then
         git clone --depth=1 https://github.com/neel0210/AnyKernel3.git -b SATORU AnyKernel3
     else
-        log "$green AnyKernel3 directory found $nocol"
+        log "$blue AnyKernel3 already present! $nocol"
     fi
 
-    # Anykernel 3 time!!
-    ls $ANYKERNEL3_DIR
-
-    log "$blue **** Copying Image.gz & dtbo.img **** $nocol"
-    cp $PWD/out/arch/arm64/boot/Image.gz $ANYKERNEL3_DIR/
-    cp $PWD/out/arch/arm64/boot/dtbo.img $ANYKERNEL3_DIR/
-    cp $PWD/out/arch/arm64/boot/dtb.img $ANYKERNEL3_DIR/
+    cp $SRC/out/arch/arm64/boot/Image.gz $ANYKERNEL3_DIR/
+    cp $SRC/out/arch/arm64/boot/dtbo.img $ANYKERNEL3_DIR/
+    cp $SRC/out/arch/arm64/boot/dtb.img $ANYKERNEL3_DIR/
 
     log "$cyan ***********************************************"
     log "          Time to zip up!          "
@@ -234,11 +249,11 @@ upload_kernel_to_telegram() {
     log "*********************************************** $nocol"
     
     # Create the caption text
-    caption=$(printf "<b>Branch Name:</b> %s\n\n<b>Last commit:</b> %s" "$(git rev-parse --abbrev-ref HEAD)" "$(git log -1 --format=%B)")
+    caption=$(printf "<b>Branch Name:</b> %s\n<b>Last commit:</b> %s" "$(sanitize_for_telegram "$(git rev-parse --abbrev-ref HEAD)")" "$(sanitize_for_telegram "$(git log -1 --format=%B)")")
 
     # Upload Time!!
     for i in *.zip; do
-        curl -F "document=@$i" --form-string "caption=" "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument?chat_id=${CHAT_ID}&parse_mode=HTML"
+        curl -F "document=@$i" --form-string "caption=${caption}" "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument?chat_id=${CHAT_ID}&parse_mode=HTML"
     done
     # Upload log file with branch name and last commit
     curl -F "document=@$COMPILATION_LOG" \
@@ -281,4 +296,5 @@ upload_kernel_to_telegram
 BUILD_END=$(date +"%s")
 DIFF=$(($BUILD_END - $BUILD_START))
 log "$yellow Build completed in $(($DIFF / 60)) minute(s) and $(($DIFF % 60)) seconds. $nocol"
+clean_up
 
