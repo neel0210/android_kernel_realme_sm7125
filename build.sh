@@ -121,7 +121,7 @@ perform_clean_build() {
     rm -rf $PWD/out/arch/arm64/boot/Image.gz
     rm -rf KernelSU
     rm -rf drivers/kernelsu
-    git checkout -- .
+    # git checkout -- .
     make clean
     make mrproper
     rm -rf *.log

@@ -28,14 +28,15 @@
 #include <linux/slab.h>
 #include <linux/sched.h>
 #include <linux/list_lru.h>
+#include <linux/ratelimit.h>
+#include <linux/uaccess.h>
+#include <linux/highmem.h>
 #include "binder_alloc.h"
 #include "binder_trace.h"
 #ifdef OPLUS_FEATURE_HANS_FREEZE
 //#Kun.Zhou@ANDROID.RESCONTROL, 2019/09/23, add for hans freeze manager
 #include <linux/hans.h>
 #endif /*OPLUS_FEATURE_HANS_FREEZE*/
-
-struct list_lru binder_alloc_lru;
 
 struct list_lru binder_alloc_lru;
 
@@ -195,6 +196,7 @@ static int binder_update_page_range(struct binder_alloc *alloc, int allocate,
 	void __user *page_addr;
 	unsigned long user_page_addr;
 	struct binder_lru_page *page;
+	struct vm_area_struct *vma = NULL;
 	struct mm_struct *mm = NULL;
 	bool need_mm = false;
 
@@ -218,43 +220,44 @@ static int binder_update_page_range(struct binder_alloc *alloc, int allocate,
 		}
 	}
 
-	if (!vma && need_mm)
-		mm = get_task_mm(alloc->tsk);
+	if (need_mm && mmget_not_zero(alloc->vma_vm_mm))
+		mm = alloc->vma_vm_mm;
 
 	if (mm) {
-		down_write(&mm->mmap_sem);
+		down_read(&mm->mmap_sem);
 		vma = alloc->vma;
-		if (vma && mm != alloc->vma_vm_mm) {
-			pr_err("%d: vma mm and task mm mismatch\n",
-				alloc->pid);
-			vma = NULL;
-		}
 	}
 
 	if (!vma && need_mm) {
-		pr_err("%d: binder_alloc_buf failed to map pages in userspace, no vma\n",
-			alloc->pid);
+		binder_alloc_debug(BINDER_DEBUG_USER_ERROR,
+				   "%d: binder_alloc_buf failed to map pages in userspace, no vma\n",
+				   alloc->pid);
 		goto err_no_vma;
 	}
 
 	for (page_addr = start; page_addr < end; page_addr += PAGE_SIZE) {
 		int ret;
 		bool on_lru;
+		size_t index;
 
 		index = (page_addr - alloc->buffer) / PAGE_SIZE;
 		page = &alloc->pages[index];
 
 		if (page->page_ptr) {
+			trace_binder_alloc_lru_start(alloc, index);
+
 			on_lru = list_lru_del(&binder_alloc_lru, &page->lru);
 			WARN_ON(!on_lru);
+
+			trace_binder_alloc_lru_end(alloc, index);
 			continue;
 		}
 
 		if (WARN_ON(!vma))
 			goto err_page_ptr_cleared;
 
+		trace_binder_alloc_page_start(alloc, index);
 		page->page_ptr = alloc_page(GFP_KERNEL |
-					    __GFP_HIGHMEM |
 					    __GFP_ZERO);
 		if (!page->page_ptr) {
 			pr_err("%d: binder_alloc_buf failed for page at %pK\n",
@@ -264,18 +267,7 @@ static int binder_update_page_range(struct binder_alloc *alloc, int allocate,
 		page->alloc = alloc;
 		INIT_LIST_HEAD(&page->lru);
 
-		ret = map_kernel_range_noflush((unsigned long)page_addr,
-					       PAGE_SIZE, PAGE_KERNEL,
-					       &page->page_ptr);
-		flush_cache_vmap((unsigned long)page_addr,
-				(unsigned long)page_addr + PAGE_SIZE);
-		if (ret != 1) {
-			pr_err("%d: binder_alloc_buf failed to map page at %pK in kernel\n",
-			       alloc->pid, page_addr);
-			goto err_map_kernel_failed;
-		}
-		user_page_addr =
-			(uintptr_t)page_addr + alloc->user_buffer_offset;
+		user_page_addr = (uintptr_t)page_addr;
 		ret = vm_insert_page(vma, user_page_addr, page[0].page_ptr);
 		if (ret) {
 			pr_err("%d: binder_alloc_buf failed to map page at %lx in userspace\n",
@@ -296,24 +288,30 @@ static int binder_update_page_range(struct binder_alloc *alloc, int allocate,
 	return 0;
 
 free_range:
-	for (page_addr = end - PAGE_SIZE; page_addr >= start;
-	     page_addr -= PAGE_SIZE) {
+	for (page_addr = end - PAGE_SIZE; 1; page_addr -= PAGE_SIZE) {
 		bool ret;
+		size_t index;
 
-		page = &alloc->pages[(page_addr - alloc->buffer) / PAGE_SIZE];
+		index = (page_addr - alloc->buffer) / PAGE_SIZE;
+		page = &alloc->pages[index];
+
+		trace_binder_free_lru_start(alloc, index);
 
 		ret = list_lru_add(&binder_alloc_lru, &page->lru);
 		WARN_ON(!ret);
+
+		trace_binder_free_lru_end(alloc, index);
+		if (page_addr == start)
+			break;
 		continue;
 
 err_vm_insert_page_failed:
-		unmap_kernel_range((unsigned long)page_addr, PAGE_SIZE);
-err_map_kernel_failed:
 		__free_page(page->page_ptr);
 		page->page_ptr = NULL;
 err_alloc_page_failed:
 err_page_ptr_cleared:
-		;
+		if (page_addr == start)
+			break;
 	}
 err_no_vma:
 	if (mm) {
@@ -875,7 +873,7 @@ void binder_alloc_deferred_release(struct binder_alloc *alloc)
 		int i;
 
 		for (i = 0; i < alloc->buffer_size / PAGE_SIZE; i++) {
-			void *page_addr;
+			void __user *page_addr;
 			bool on_lru;
 
 			if (!alloc->pages[i].page_ptr)
@@ -888,9 +886,8 @@ void binder_alloc_deferred_release(struct binder_alloc *alloc)
 				     "%s: %d: page %d at %pK %s\n",
 				     __func__, alloc->pid, i, page_addr,
 				     on_lru ? "on lru" : "active");
-			unmap_kernel_range((unsigned long)page_addr, PAGE_SIZE);
 			__free_page(alloc->pages[i].page_ptr);
-				page_count++;
+			page_count++;
 		}
 		kfree(alloc->pages);
 	}
@@ -1015,6 +1012,7 @@ enum lru_status binder_alloc_free_page(struct list_head *item,
 	struct binder_alloc *alloc;
 	uintptr_t page_addr;
 	size_t index;
+	struct vm_area_struct *vma;
 
 	alloc = page->alloc;
 	if (!mutex_trylock(&alloc->mutex))
@@ -1025,33 +1023,41 @@ enum lru_status binder_alloc_free_page(struct list_head *item,
 
 	index = page - alloc->pages;
 	page_addr = (uintptr_t)alloc->buffer + index * PAGE_SIZE;
-	if (alloc->vma) {
-		mm = get_task_mm(alloc->tsk);
-		if (!mm)
-			goto err_get_task_mm_failed;
-		if (!down_write_trylock(&mm->mmap_sem))
-			goto err_down_write_mmap_sem_failed;
 
-		zap_page_range(alloc->vma,
-			       page_addr + alloc->user_buffer_offset,
-			       PAGE_SIZE);
+	mm = alloc->vma_vm_mm;
+	if (!mmget_not_zero(mm))
+		goto err_mmget;
+	if (!down_read_trylock(&mm->mmap_sem))
+		goto err_down_read_mmap_sem_failed;
+	vma = binder_alloc_get_vma(alloc);
 
-		up_write(&mm->mmap_sem);
-		mmput(mm);
+	list_lru_isolate(lru, item);
+	spin_unlock(lock);
+
+	if (vma) {
+		trace_binder_unmap_user_start(alloc, index);
+
+		zap_page_range(vma, page_addr, PAGE_SIZE);
+
+		trace_binder_unmap_user_end(alloc, index);
 	}
+	up_read(&mm->mmap_sem);
+	mmput_async(mm);
 
-	unmap_kernel_range(page_addr, PAGE_SIZE);
+	trace_binder_unmap_kernel_start(alloc, index);
+
 	__free_page(page->page_ptr);
 	page->page_ptr = NULL;
 
-	list_lru_isolate(lru, item);
+	trace_binder_unmap_kernel_end(alloc, index);
 
+	spin_lock(lock);
 	mutex_unlock(&alloc->mutex);
-	return LRU_REMOVED;
+	return LRU_REMOVED_RETRY;
 
-err_down_write_mmap_sem_failed:
-	mmput(mm);
-err_get_task_mm_failed:
+err_down_read_mmap_sem_failed:
+	mmput_async(mm);
+err_mmget:
 err_page_already_freed:
 	mutex_unlock(&alloc->mutex);
 err_get_alloc_mutex_failed:
@@ -1075,7 +1081,7 @@ binder_shrink_scan(struct shrinker *shrink, struct shrink_control *sc)
 	return ret;
 }
 
-struct shrinker binder_shrinker = {
+static struct shrinker binder_shrinker = {
 	.count_objects = binder_shrink_count,
 	.scan_objects = binder_shrink_scan,
 	.seeks = DEFAULT_SEEKS,
@@ -1095,11 +1101,217 @@ void binder_alloc_init(struct binder_alloc *alloc)
 	INIT_LIST_HEAD(&alloc->buffers);
 }
 
-void binder_alloc_shrinker_init(void)
+int binder_alloc_shrinker_init(void)
 {
-	list_lru_init(&binder_alloc_lru);
-	register_shrinker(&binder_shrinker);
+	int ret = list_lru_init(&binder_alloc_lru);
+
+	if (ret == 0) {
+		ret = register_shrinker(&binder_shrinker);
+		if (ret)
+			list_lru_destroy(&binder_alloc_lru);
+	}
+	return ret;
 }
+
+/**
+ * check_buffer() - verify that buffer/offset is safe to access
+ * @alloc: binder_alloc for this proc
+ * @buffer: binder buffer to be accessed
+ * @offset: offset into @buffer data
+ * @bytes: bytes to access from offset
+ *
+ * Check that the @offset/@bytes are within the size of the given
+ * @buffer and that the buffer is currently active and not freeable.
+ * Offsets must also be multiples of sizeof(u32). The kernel is
+ * allowed to touch the buffer in two cases:
+ *
+ * 1) when the buffer is being created:
+ *     (buffer->free == 0 && buffer->allow_user_free == 0)
+ * 2) when the buffer is being torn down:
+ *     (buffer->free == 0 && buffer->transaction == NULL).
+ *
+ * Return: true if the buffer is safe to access
+ */
+static inline bool check_buffer(struct binder_alloc *alloc,
+				struct binder_buffer *buffer,
+				binder_size_t offset, size_t bytes)
+{
+	size_t buffer_size = binder_alloc_buffer_size(alloc, buffer);
+
+	return buffer_size >= bytes &&
+		offset <= buffer_size - bytes &&
+		IS_ALIGNED(offset, sizeof(u32)) &&
+		!buffer->free &&
+		(!buffer->allow_user_free || !buffer->transaction);
+}
+
+/**
+ * binder_alloc_get_page() - get kernel pointer for given buffer offset
+ * @alloc: binder_alloc for this proc
+ * @buffer: binder buffer to be accessed
+ * @buffer_offset: offset into @buffer data
+ * @pgoffp: address to copy final page offset to
+ *
+ * Lookup the struct page corresponding to the address
+ * at @buffer_offset into @buffer->user_data. If @pgoffp is not
+ * NULL, the byte-offset into the page is written there.
+ *
+ * The caller is responsible to ensure that the offset points
+ * to a valid address within the @buffer and that @buffer is
+ * not freeable by the user. Since it can't be freed, we are
+ * guaranteed that the corresponding elements of @alloc->pages[]
+ * cannot change.
+ *
+ * Return: struct page
+ */
+static struct page *binder_alloc_get_page(struct binder_alloc *alloc,
+					  struct binder_buffer *buffer,
+					  binder_size_t buffer_offset,
+					  pgoff_t *pgoffp)
+{
+	binder_size_t buffer_space_offset = buffer_offset +
+		(buffer->user_data - alloc->buffer);
+	pgoff_t pgoff = buffer_space_offset & ~PAGE_MASK;
+	size_t index = buffer_space_offset >> PAGE_SHIFT;
+	struct binder_lru_page *lru_page;
+
+	lru_page = &alloc->pages[index];
+	*pgoffp = pgoff;
+	return lru_page->page_ptr;
+}
+
+/**
+ * binder_alloc_clear_buf() - zero out buffer
+ * @alloc: binder_alloc for this proc
+ * @buffer: binder buffer to be cleared
+ *
+ * memset the given buffer to 0
+ */
+static void binder_alloc_clear_buf(struct binder_alloc *alloc,
+				   struct binder_buffer *buffer)
+{
+	size_t bytes = binder_alloc_buffer_size(alloc, buffer);
+	binder_size_t buffer_offset = 0;
+
+	while (bytes) {
+		unsigned long size;
+		struct page *page;
+		pgoff_t pgoff;
+		void *kptr;
+
+		page = binder_alloc_get_page(alloc, buffer,
+					     buffer_offset, &pgoff);
+		size = min_t(size_t, bytes, PAGE_SIZE - pgoff);
+		kptr = kmap(page) + pgoff;
+		memset(kptr, 0, size);
+		kunmap(page);
+		bytes -= size;
+		buffer_offset += size;
+	}
+}
+
+/**
+ * binder_alloc_copy_user_to_buffer() - copy src user to tgt user
+ * @alloc: binder_alloc for this proc
+ * @buffer: binder buffer to be accessed
+ * @buffer_offset: offset into @buffer data
+ * @from: userspace pointer to source buffer
+ * @bytes: bytes to copy
+ *
+ * Copy bytes from source userspace to target buffer.
+ *
+ * Return: bytes remaining to be copied
+ */
+unsigned long
+binder_alloc_copy_user_to_buffer(struct binder_alloc *alloc,
+				 struct binder_buffer *buffer,
+				 binder_size_t buffer_offset,
+				 const void __user *from,
+				 size_t bytes)
+{
+	if (!check_buffer(alloc, buffer, buffer_offset, bytes))
+		return bytes;
+
+	while (bytes) {
+		unsigned long size;
+		unsigned long ret;
+		struct page *page;
+		pgoff_t pgoff;
+		void *kptr;
+
+		page = binder_alloc_get_page(alloc, buffer,
+					     buffer_offset, &pgoff);
+		size = min_t(size_t, bytes, PAGE_SIZE - pgoff);
+		kptr = kmap(page) + pgoff;
+		ret = copy_from_user(kptr, from, size);
+		kunmap(page);
+		if (ret)
+			return bytes - size + ret;
+		bytes -= size;
+		from += size;
+		buffer_offset += size;
+	}
+	return 0;
+}
+
+static void binder_alloc_do_buffer_copy(struct binder_alloc *alloc,
+					bool to_buffer,
+					struct binder_buffer *buffer,
+					binder_size_t buffer_offset,
+					void *ptr,
+					size_t bytes)
+{
+	/* All copies must be 32-bit aligned and 32-bit size */
+	BUG_ON(!check_buffer(alloc, buffer, buffer_offset, bytes));
+
+	while (bytes) {
+		unsigned long size;
+		struct page *page;
+		pgoff_t pgoff;
+		void *tmpptr;
+		void *base_ptr;
+
+		page = binder_alloc_get_page(alloc, buffer,
+					     buffer_offset, &pgoff);
+		size = min_t(size_t, bytes, PAGE_SIZE - pgoff);
+		base_ptr = kmap_atomic(page);
+		tmpptr = base_ptr + pgoff;
+		if (to_buffer)
+			memcpy(tmpptr, ptr, size);
+		else
+			memcpy(ptr, tmpptr, size);
+		/*
+		 * kunmap_atomic() takes care of flushing the cache
+		 * if this device has VIVT cache arch
+		 */
+		kunmap_atomic(base_ptr);
+		bytes -= size;
+		pgoff = 0;
+		ptr = ptr + size;
+		buffer_offset += size;
+	}
+}
+
+void binder_alloc_copy_to_buffer(struct binder_alloc *alloc,
+				 struct binder_buffer *buffer,
+				 binder_size_t buffer_offset,
+				 void *src,
+				 size_t bytes)
+{
+	binder_alloc_do_buffer_copy(alloc, true, buffer, buffer_offset,
+				    src, bytes);
+}
+
+void binder_alloc_copy_from_buffer(struct binder_alloc *alloc,
+				   void *dest,
+				   struct binder_buffer *buffer,
+				   binder_size_t buffer_offset,
+				   size_t bytes)
+{
+	binder_alloc_do_buffer_copy(alloc, false, buffer, buffer_offset,
+				    dest, bytes);
+}
+
 
 void binder_alloc_shrinker_exit(void)
 {
