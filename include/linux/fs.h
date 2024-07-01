@@ -3299,9 +3299,7 @@ static inline int kiocb_set_rw_flags(struct kiocb *ki, rwf_t flags)
 	}
 	kiocb_flags |= (__force int)(flags & RWF_SUPPORTED);
 	if (flags & RWF_SYNC)
-		kiocb_flags |= IOCB_DSYNC;
-
-	ki->ki_flags |= kiocb_flags;
+		ki->ki_flags |= (IOCB_DSYNC | IOCB_SYNC);
 	return 0;
 }
 
