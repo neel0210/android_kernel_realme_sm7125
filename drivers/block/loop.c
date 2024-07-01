@@ -1248,11 +1248,6 @@ loop_set_status(struct loop_device *lo, const struct loop_info64 *info)
 	lo->lo_file_name[LO_NAME_SIZE-1] = 0;
 	lo->lo_crypt_name[LO_NAME_SIZE-1] = 0;
 
-	if (!xfer)
-		xfer = &none_funcs;
-	lo->transfer = xfer->transfer;
-	lo->ioctl = xfer->ioctl;
-
 	if ((lo->lo_flags & LO_FLAGS_AUTOCLEAR) !=
 	     (info->lo_flags & LO_FLAGS_AUTOCLEAR))
 		lo->lo_flags ^= LO_FLAGS_AUTOCLEAR;
