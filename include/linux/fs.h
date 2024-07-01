@@ -295,7 +295,6 @@ enum rw_hint {
 #define IOCB_DSYNC		(__force int) RWF_DSYNC
 #define IOCB_SYNC		(__force int) RWF_SYNC
 #define IOCB_NOWAIT		(__force int) RWF_NOWAIT
-#define IOCB_APPEND		(__force int) RWF_APPEND
 
 /* non-RWF related bits - start at 16 */
 #define IOCB_EVENTFD		(1 << 16)
@@ -3273,8 +3272,6 @@ static inline bool vma_is_fsdax(struct vm_area_struct *vma)
 static inline int iocb_flags(struct file *file)
 {
 	int res = 0;
-	if (file->f_flags & O_APPEND)
-		res |= IOCB_APPEND;
 	if (io_is_direct(file))
 		res |= IOCB_DIRECT;
 	if ((file->f_flags & O_DSYNC) || IS_SYNC(file->f_mapping->host))
