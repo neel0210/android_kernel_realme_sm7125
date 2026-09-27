@@ -146,6 +146,28 @@ find_toolchain() {
 
 # Setup build environment
 set_env_variables() {
+    # Ensure 'python' command resolves (Android kernel build scripts invoke python)
+    local py_shim_dir="${SRC}/.py_bin"
+    mkdir -p "$py_shim_dir"
+    if ! command -v python &> /dev/null; then
+        local target_py=""
+        if [[ -x "$TOOLCHAIN_PATH/python3/bin/python3" ]]; then
+            target_py="$TOOLCHAIN_PATH/python3/bin/python3"
+        elif [[ -x "/home/itachi/toolchain/clang/host/linux-x86/clang-r383902/python3/bin/python3" ]]; then
+            target_py="/home/itachi/toolchain/clang/host/linux-x86/clang-r383902/python3/bin/python3"
+        elif command -v python3 &> /dev/null; then
+            target_py="$(command -v python3)"
+        elif command -v python2 &> /dev/null; then
+            target_py="$(command -v python2)"
+        fi
+        if [[ -n "$target_py" ]]; then
+            ln -sf "$target_py" "${py_shim_dir}/python"
+            ln -sf "$target_py" "${py_shim_dir}/python2" 2>/dev/null || true
+            export PATH="${py_shim_dir}:$PATH"
+            log "$green Symlinked python -> $target_py $nocol"
+        fi
+    fi
+
     export PATH="$TOOLCHAIN_PATH/bin:$PATH"
     export ARCH=arm64
     export SUBARCH=arm64
@@ -202,7 +224,6 @@ perform_clean_build() {
     log "$blue Performing clean build... $nocol"
     rm -rf "${SRC}/out"
     rm -rf "${SRC}/KernelSU" "${SRC}/drivers/kernelsu"
-    git checkout -- . 2>/dev/null || true
     make clean
     make mrproper
     rm -f "${SRC}"/*.log "${SRC}"/*.zip
@@ -389,6 +410,7 @@ upload_kernel_to_telegram() {
 
 # Cleanup
 clean_up() {
+    rm -rf "${SRC}/.py_bin"
     log "$cyan All done! $nocol"
 }
 
