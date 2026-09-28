@@ -444,11 +444,8 @@ flash_and_test() {
 
     if [[ "$state" != "sideload" && "$state" != "recovery" ]]; then
         log "$yellow [*] Rebooting device into recovery... $nocol"
-        adb reboot recovery || {
-            log "$yellow [!] Could not reboot via adb, checking if already in recovery/sideload... $nocol"
-        }
+        adb reboot recovery 2>/dev/null || true
         log "$yellow [*] Waiting for device to enter recovery / sideload mode... $nocol"
-        # Wait up to 60s for recovery or sideload
         local waited=0
         while [[ $waited -lt 60 ]]; do
             state="$(adb get-state 2>/dev/null || echo "offline")"
@@ -460,17 +457,45 @@ flash_and_test() {
         done
     fi
 
-    # If in recovery, try put into sideload mode
+    # If in recovery mode, put into sideload mode
     if [[ "$state" == "recovery" ]]; then
-        log "$blue [*] Device in recovery. Starting sideload listener... $nocol"
+        log "$blue [*] Device in recovery. Starting sideload server... $nocol"
         adb shell twrp sideload 2>/dev/null || adb reboot sideload 2>/dev/null || true
-        sleep 3
     fi
 
-    log "$green [*] Sending sideload: $(basename "$zip_path")... $nocol"
-    if adb sideload "$zip_path"; then
-        log "$green [*] Sideload succeeded! Rebooting system... $nocol"
+    # Wait until adb state is explicitly 'sideload'
+    log "$yellow [*] Waiting for sideload mode to become ready... $nocol"
+    local waited=0
+    while [[ $waited -lt 40 ]]; do
+        state="$(adb get-state 2>/dev/null || echo "offline")"
+        if [[ "$state" == "sideload" ]]; then
+            break
+        fi
         sleep 2
+        waited=$((waited + 2))
+    done
+
+    # Give recovery daemon a moment to open socket
+    sleep 3
+
+    log "$green [*] Sending sideload: $(basename "$zip_path")... $nocol"
+    local retries=3
+    local success=0
+    while [[ $retries -gt 0 ]]; do
+        if adb sideload "$zip_path"; then
+            success=1
+            break
+        fi
+        retries=$((retries - 1))
+        if [[ $retries -gt 0 ]]; then
+            log "$yellow [!] Sideload socket closed/busy, waiting 3s to retry ($retries left)... $nocol"
+            sleep 3
+        fi
+    done
+
+    if [[ $success -eq 1 ]]; then
+        log "$green [*] Sideload succeeded! Waiting 5s for install scripts... $nocol"
+        sleep 5
         adb reboot 2>/dev/null || adb reboot system 2>/dev/null || true
         log "$green [*] Device rebooted. Test flash complete! $nocol"
     else
