@@ -44,8 +44,8 @@ struct smart_pa_range smart_pa_range_info[] = {
 	{OPPO_19111, 5000, 7800},
 };
 
-/*Jianfeng.Qiu@PSW.MM.AudioDriver.FTM.1226731, 2018/05/12, Add for FTM*/
-extern int ftm_mode;
+extern int tfa98xx_ftm_mode;
+#define ftm_mode tfa98xx_ftm_mode
 extern char ftm_SpeakerCalibration[17];
 extern char ftm_spk_resistance[24];
 
