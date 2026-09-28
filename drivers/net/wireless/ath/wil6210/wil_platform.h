@@ -92,10 +92,27 @@ struct wil_platform_rops {
  *      when platform driver invokes one of the callbacks in
  *      rops. May be NULL if rops is NULL.
  */
+#if defined(CONFIG_WIL6210_PLATFORM_MSM)
 void *wil_platform_init(struct device *dev, struct wil_platform_ops *ops,
 			const struct wil_platform_rops *rops, void *wil_handle);
 
 int __init wil_platform_modinit(void);
 void wil_platform_modexit(void);
+#else
+static inline void *wil_platform_init(struct device *dev, struct wil_platform_ops *ops,
+				      const struct wil_platform_rops *rops, void *wil_handle)
+{
+	return (void *)1;
+}
+
+static inline int wil_platform_modinit(void)
+{
+	return 0;
+}
+
+static inline void wil_platform_modexit(void)
+{
+}
+#endif
 
 #endif /* __WIL_PLATFORM_H__ */
