@@ -33,6 +33,7 @@ BUILD_START=""
 BUILD_CLEAN=""      # "y", "n", or "" (prompt)
 BUILD_KSU=""        # "y", "n", or "" (prompt)
 ENABLE_TG=""       # "y", "n", or "" (auto-detect)
+TEST_MODE="n"       # "y" or "n" (flash via adb sideload and reboot)
 JOBS="$(nproc --all)"
 VERBOSE=0
 
@@ -48,6 +49,7 @@ Options:
   --no-ksu          Build without KernelSU
   --tg              Upload build artifacts and logs to Telegram
   --no-tg           Do not upload to Telegram (offline / local build)
+  --test            Test mode: reboot to recovery, flash via adb sideload, reboot
   -j, --jobs N      Use N parallel compilation threads (default: $JOBS)
   -v, --verbose     Verbose make output (V=1)
   -h, --help        Show this help message
@@ -55,6 +57,7 @@ Options:
 Examples:
   ./build.sh --dirty --no-ksu --no-tg       # Fastest local incremental build
   ./build.sh --clean --ksu --tg             # Full clean release build to Telegram
+  ./build.sh --dirty --no-ksu --test        # Build and flash to connected device
 EOF
 }
 
@@ -83,6 +86,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-tg)
             ENABLE_TG="n"
+            shift
+            ;;
+        --test)
+            TEST_MODE="y"
             shift
             ;;
         -j|--jobs)
@@ -409,6 +416,69 @@ upload_kernel_to_telegram() {
     fi
 }
 
+# Flash kernel zip via adb sideload if --test requested
+flash_and_test() {
+    if [[ "$TEST_MODE" != "y" ]]; then
+        return
+    fi
+
+    local zip_path="${SRC}/${FINAL_KERNEL_ZIP}"
+    if [[ ! -f "$zip_path" ]]; then
+        log "$red [!] Zip file $zip_path not found. Cannot test. $nocol"
+        return 1
+    fi
+
+    if ! command -v adb &> /dev/null; then
+        log "$red [!] adb command not found in PATH. Install android-tools-adb. $nocol"
+        return 1
+    fi
+
+    log "$yellow *********************************************** $nocol"
+    log "$yellow [*] Test Mode: Initiating sideload flash... $nocol"
+    log "$yellow *********************************************** $nocol"
+
+    # Check device state
+    local state
+    state="$(adb get-state 2>/dev/null || echo "offline")"
+    log "$blue [*] Current ADB state: ${state} $nocol"
+
+    if [[ "$state" != "sideload" && "$state" != "recovery" ]]; then
+        log "$yellow [*] Rebooting device into recovery... $nocol"
+        adb reboot recovery || {
+            log "$yellow [!] Could not reboot via adb, checking if already in recovery/sideload... $nocol"
+        }
+        log "$yellow [*] Waiting for device to enter recovery / sideload mode... $nocol"
+        # Wait up to 60s for recovery or sideload
+        local waited=0
+        while [[ $waited -lt 60 ]]; do
+            state="$(adb get-state 2>/dev/null || echo "offline")"
+            if [[ "$state" == "recovery" || "$state" == "sideload" ]]; then
+                break
+            fi
+            sleep 2
+            waited=$((waited + 2))
+        done
+    fi
+
+    # If in recovery, try put into sideload mode
+    if [[ "$state" == "recovery" ]]; then
+        log "$blue [*] Device in recovery. Starting sideload listener... $nocol"
+        adb shell twrp sideload 2>/dev/null || adb reboot sideload 2>/dev/null || true
+        sleep 3
+    fi
+
+    log "$green [*] Sending sideload: $(basename "$zip_path")... $nocol"
+    if adb sideload "$zip_path"; then
+        log "$green [*] Sideload succeeded! Rebooting system... $nocol"
+        sleep 2
+        adb reboot 2>/dev/null || adb reboot system 2>/dev/null || true
+        log "$green [*] Device rebooted. Test flash complete! $nocol"
+    else
+        log "$red [!] Sideload failed! Check device screen or adb connection. $nocol"
+        return 1
+    fi
+}
+
 # Cleanup
 clean_up() {
     rm -rf "${SRC}/.py_bin"
@@ -428,6 +498,7 @@ verify_kernel_build
 zip_kernel_files
 compute_checksum
 upload_kernel_to_telegram
+flash_and_test
 
 BUILD_END=$(date +"%s")
 DIFF=$((BUILD_END - BUILD_START))
