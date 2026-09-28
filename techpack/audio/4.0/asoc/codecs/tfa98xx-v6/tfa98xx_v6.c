@@ -327,7 +327,8 @@ static enum tfa_error tfa98xx_write_re25(struct tfa_device *tfa, int value)
 /*Jianfeng.Qiu@PSW.MM.AudioDriver.FTM.1226731, 2018/05/12, Add for FTM*/
 static  struct dentry *tfa98xx_debugfs;
 #define TFA98XX_DEBUG_FS_NAME "ftm_tfa98xx"
-int ftm_mode = 0;
+int tfa98xx_ftm_mode = 0;
+#define ftm_mode tfa98xx_ftm_mode
 static char ftm_load_file[15] = "load_file_ok";
 static char ftm_clk[9] = "clk_ok";
 char ftm_SpeakerCalibration[17] = "calibration_ok";
