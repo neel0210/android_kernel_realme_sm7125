@@ -121,22 +121,24 @@ check_tools() {
     done
 }
 
-# Locate Clang toolchain dynamically
+# Locate Clang toolchain dynamically (repo-local clang prioritized, fallback to clone)
 find_toolchain() {
     if [[ -n "$CLANG_PATH" && -x "$CLANG_PATH/bin/clang" ]]; then
         TOOLCHAIN_PATH="$CLANG_PATH"
-    elif [[ -x "/home/itachi/toolchain/clang/host/linux-x86/clang-r383902/bin/clang" ]]; then
-        TOOLCHAIN_PATH="/home/itachi/toolchain/clang/host/linux-x86/clang-r383902"
-    elif [[ -x "/home/itachi/toolchain/neutron-clang/bin/clang" ]]; then
-        TOOLCHAIN_PATH="/home/itachi/toolchain/neutron-clang"
-    elif [[ -x "/home/itachi/proton/bin/clang" ]]; then
-        TOOLCHAIN_PATH="/home/itachi/proton"
+    elif [[ -x "${SRC}/clang/bin/clang" ]]; then
+        TOOLCHAIN_PATH="${SRC}/clang"
+    elif [[ -x "${SRC}/toolchain/bin/clang" ]]; then
+        TOOLCHAIN_PATH="${SRC}/toolchain"
+    elif [[ -x "${HOME}/toolchain/clang/host/linux-x86/clang-r383902/bin/clang" ]]; then
+        TOOLCHAIN_PATH="${HOME}/toolchain/clang/host/linux-x86/clang-r383902"
+    elif [[ -x "${HOME}/proton/bin/clang" ]]; then
+        TOOLCHAIN_PATH="${HOME}/proton"
     elif command -v clang &> /dev/null; then
         TOOLCHAIN_PATH="$(dirname "$(dirname "$(command -v clang)")")"
     else
-        TOOLCHAIN_PATH="/home/itachi/proton"
-        log "$yellow No pre-installed clang found. Cloning Proton Clang... $nocol"
-        if ! git clone -q https://github.com/kdrag0n/proton-clang --depth=1 --single-branch "$TOOLCHAIN_PATH"; then
+        TOOLCHAIN_PATH="${SRC}/clang"
+        log "$yellow No toolchain found in ${SRC}/clang. Cloning Proton Clang... $nocol"
+        if ! git clone -q https://github.com/kdrag0n/proton-clang.git --depth=1 "$TOOLCHAIN_PATH"; then
             log "$red Cloning failed! Aborting... $nocol"
             exit 1
         fi
@@ -153,8 +155,6 @@ set_env_variables() {
         local target_py=""
         if [[ -x "$TOOLCHAIN_PATH/python3/bin/python3" ]]; then
             target_py="$TOOLCHAIN_PATH/python3/bin/python3"
-        elif [[ -x "/home/itachi/toolchain/clang/host/linux-x86/clang-r383902/python3/bin/python3" ]]; then
-            target_py="/home/itachi/toolchain/clang/host/linux-x86/clang-r383902/python3/bin/python3"
         elif command -v python3 &> /dev/null; then
             target_py="$(command -v python3)"
         elif command -v python2 &> /dev/null; then
@@ -171,17 +171,17 @@ set_env_variables() {
     export PATH="$TOOLCHAIN_PATH/bin:$PATH"
     export ARCH=arm64
     export SUBARCH=arm64
-    export KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-Itachi}"
-    export KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-Konoha}"
+    export KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-$(whoami)}"
+    export KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-$(hostname)}"
     export KBUILD_COMPILER_STRING="$("$TOOLCHAIN_PATH/bin/clang" --version | head -n 1 | perl -pe 's/\(http.*?\)//gs' | sed -e 's/  */ /g' -e 's/[[:space:]]*$//')"
 
-    # Automatic ccache detection
+    # Dynamic ccache detection (no hardcoded user paths)
     if command -v ccache &> /dev/null; then
         export USE_CCACHE=1
-        if [[ -d "/home/itachi/.ccache" ]]; then
-            export CCACHE_DIR="/home/itachi/.ccache"
-        elif [[ -d "/home/itachi/ccache/.ccache" ]]; then
-            export CCACHE_DIR="/home/itachi/ccache/.ccache"
+        if [[ -d "${HOME}/.ccache" ]]; then
+            export CCACHE_DIR="${HOME}/.ccache"
+        elif [[ -d "${HOME}/ccache/.ccache" ]]; then
+            export CCACHE_DIR="${HOME}/ccache/.ccache"
         fi
         export CCACHE_EXEC="$(command -v ccache)"
         export CC="ccache clang"
@@ -224,8 +224,8 @@ perform_clean_build() {
     log "$blue Performing clean build... $nocol"
     rm -rf "${SRC}/out"
     rm -rf "${SRC}/KernelSU" "${SRC}/drivers/kernelsu"
-    make clean
-    make mrproper
+    make HOSTCC="gcc -B/usr/bin/" clean
+    make HOSTCC="gcc -B/usr/bin/" mrproper
     rm -f "${SRC}"/*.log "${SRC}"/*.zip
 }
 
@@ -289,13 +289,14 @@ build_kernel() {
 
     mkdir -p "${SRC}/out"
     if [[ ! -f "${SRC}/out/.config" || "$BUILD_CLEAN" == "y" ]]; then
-        make $KERNEL_DEFCONFIG O=out
+        make HOSTCC="gcc -B/usr/bin/" $KERNEL_DEFCONFIG O=out
     fi
 
     if ! make -j"$JOBS" O=out \
                           ARCH=arm64 \
-                          CC="$CC" \
-                          CXX="$CXX" \
+                          CC="clang" \
+                          CXX="clang++" \
+                          HOSTCC="gcc -B/usr/bin/" \
                           CROSS_COMPILE=aarch64-linux-gnu- \
                           CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
                           AR=llvm-ar \
