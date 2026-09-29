@@ -386,6 +386,8 @@ ifeq ($(shell $(HOSTCC) -v 2>&1 | grep -c "clang version"), 1)
 HOSTCFLAGS  += -Wno-unused-value -Wno-unused-parameter \
 		-Wno-missing-field-initializers
 endif
+HOSTCFLAGS   += -B/usr/bin
+HOSTLDFLAGS  += -B/usr/bin
 KBUILD_HOSTCFLAGS   := -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 \
 		-fomit-frame-pointer -std=gnu89 -pipe $(HOST_LFS_CFLAGS) \
 		$(HOSTCFLAGS)
@@ -420,7 +422,7 @@ GENKSYMS	= scripts/genksyms/genksyms
 INSTALLKERNEL  := installkernel
 DEPMOD		= depmod
 PERL		= perl
-PYTHON		= python
+PYTHON		?= $(shell command -v python3 2>/dev/null || command -v python 2>/dev/null || echo python)
 CHECK		= sparse
 
 # Use the wrapper for the compiler.  This wrapper scans for new
