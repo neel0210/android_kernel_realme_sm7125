@@ -6,9 +6,9 @@ set -euo pipefail
 
 # ── Global Config ──────────────────────────────────────────────────
 SRC="$(cd "$(dirname "$0")" && pwd)"
-PROTON_PATH="/home/itachi/proton"
-KBUILD_BUILD_USER="Itachi"
-KBUILD_BUILD_HOST="Konoha"
+PROTON_PATH="${PROTON_PATH:-/home/itachi/proton}"
+KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-Itachi}"
+KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-Konoha}"
 ANYKERNEL3_DIR="${SRC}/AnyKernel3"
 DEVICE="RMX2061"
 VERSION="$(git -C "$SRC" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
