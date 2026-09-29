@@ -1,300 +1,314 @@
 #!/bin/bash
+# Arise-Again Kernel Build Script
+# Version 2.0
 
-# Script version
-SCRIPT_VERSION="1.3"
+set -euo pipefail
 
-set -e
-
-# Define global variables
-SRC="$(pwd)"
-PROTON_PATH="/home/itachi/proton"
-KBUILD_BUILD_USER="Itachi"
-KBUILD_BUILD_HOST="Konoha"
-ANYKERNEL3_DIR=AnyKernel3
-FINAL_KERNEL_ZIP=""
-BUILD_START=""
-DEVICE=RMX2061
-VERSION=$(git rev-parse --abbrev-ref HEAD)  # Get the current branch name
-KERNEL_DEFCONFIG=atoll_defconfig
+# ── Global Config ──────────────────────────────────────────────────
+SRC="$(cd "$(dirname "$0")" && pwd)"
+PROTON_PATH="${PROTON_PATH:-/home/itachi/proton}"
+KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-Itachi}"
+KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-Konoha}"
+ANYKERNEL3_DIR="${SRC}/AnyKernel3"
+DEVICE="RMX2061"
+VERSION="$(git -C "$SRC" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+KERNEL_DEFCONFIG="atoll_defconfig"
 LOG_FILE="${SRC}/build.log"
 COMPILATION_LOG="${SRC}/compilation.log"
-USER=$(whoami)
+JOBS="$(nproc --all)"
+FINAL_KERNEL_ZIP=""
 
-# Remove old kernel zip files
-rm -rf *.zip
+# ── Defaults (overridden by flags) ────────────────────────────────
+CLEAN=0
+KSU=0
+TELEGRAM=0
+VERBOSE=0
+CHAT_ID="${CHAT_ID:-}"
+BOT_TOKEN="${BOT_TOKEN:-}"
 
-# Color definitions
-red='\033[0;31m'
-green='\033[0;32m'
-yellow='\033[0;33m'
-blue='\033[0;34m'
-cyan='\033[0;36m'
+# ── Colors ────────────────────────────────────────────────────────
+red='\033[0;31m'  green='\033[0;32m'  yellow='\033[0;33m'
+blue='\033[0;34m'  cyan='\033[0;36m'  bold='\033[1m'
 nocol='\033[0m'
 
-# Function to log messages
-log() {
-    echo -e "$1" | tee -a "$LOG_FILE"
+# ── Helpers ───────────────────────────────────────────────────────
+log()  { echo -e "${blue}[*]${nocol} $1" | tee -a "$LOG_FILE"; }
+ok()   { echo -e "${green}[✓]${nocol} $1" | tee -a "$LOG_FILE"; }
+warn() { echo -e "${yellow}[!]${nocol} $1" | tee -a "$LOG_FILE"; }
+die()  { echo -e "${red}[✗]${nocol} $1" | tee -a "$LOG_FILE"; exit 1; }
+
+banner() {
+    echo -e "${cyan}${bold}"
+    echo "╔══════════════════════════════════════════╗"
+    echo "║        Arise-Again Kernel Builder        ║"
+    echo "║             v2.0 · RMX2061               ║"
+    echo "╚══════════════════════════════════════════╝"
+    echo -e "${nocol}"
 }
 
-# Function to check required tools
-check_tools() {
-    local tools=("git" "curl" "wget" "make" "zip")
-    for tool in "${tools[@]}"; do
-        if ! command -v "$tool" &> /dev/null; then
-            log "$red Tool $tool is required but not installed. Aborting... $nocol"
-            exit 1
-        fi
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [OPTIONS]
+
+Options:
+  -c, --clean       Full clean build (make clean && mrproper)
+  -d, --dirty       Dirty build (skip cleaning, fastest rebuild)
+  -k, --ksu         Build with KernelSU
+  -t, --telegram    Upload zip + logs to Telegram after build
+  -j N              Override parallel job count (default: $(nproc --all))
+  -v, --verbose     Verbose make output (V=1)
+  -h, --help        Show this help
+
+Environment:
+  CHAT_ID           Telegram chat ID (or set in SEND_TO_TG.txt)
+  BOT_TOKEN         Telegram bot token (or set in SEND_TO_TG.txt)
+
+Examples:
+  ./build.sh -d              # Fast dirty rebuild
+  ./build.sh -c -k -t        # Clean build + KernelSU + Telegram upload
+  ./build.sh -j 8            # Use 8 parallel jobs
+EOF
+    exit 0
+}
+
+# ── Argument Parsing ──────────────────────────────────────────────
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -c|--clean)    CLEAN=1 ;;
+            -d|--dirty)    CLEAN=0 ;;
+            -k|--ksu)      KSU=1 ;;
+            -t|--telegram) TELEGRAM=1 ;;
+            -v|--verbose)  VERBOSE=1 ;;
+            -j)            JOBS="${2:?'-j requires a number'}"; shift ;;
+            -h|--help)     usage ;;
+            *)             die "Unknown option: $1 (try --help)" ;;
+        esac
+        shift
     done
 }
 
-# Function to prompt for Telegram credentials
-prompt_for_telegram_credentials() {
-    read -p "Do you want to add Telegram credentials to SEND_TO_TG.txt? (y/n): " add_creds
-    if [[ $add_creds =~ ^[Yy]$ ]]; then
-        read -p "Enter CHAT_ID: " chat_id
-        read -p "Enter BOT_TOKEN: " bot_token
-        echo -e "CHAT_ID=${chat_id}\nBOT_TOKEN=${bot_token}" > "${SRC}/SEND_TO_TG.txt"
-        log "$green Telegram credentials added to SEND_TO_TG.txt $nocol"
-        CHAT_ID=$chat_id
-        BOT_TOKEN=$bot_token
-    else
-        log "$red Aborting... $nocol"
-    fi
+# ── Tool Check ────────────────────────────────────────────────────
+check_tools() {
+    local tools=(git curl make zip)
+    for t in "${tools[@]}"; do
+        command -v "$t" &>/dev/null || die "$t is required but not found"
+    done
+    ok "All required tools present"
 }
 
-# Function to check for Telegram credentials
-check_telegram_credentials() {
-    if [[ -z "${CHAT_ID}" || -z "${BOT_TOKEN}" ]]; then
+# ── Telegram ──────────────────────────────────────────────────────
+load_telegram_creds() {
+    if [[ -z "$CHAT_ID" || -z "$BOT_TOKEN" ]]; then
         if [[ -f "${SRC}/SEND_TO_TG.txt" ]]; then
-            log "$yellow Using Telegram credentials from SEND_TO_TG.txt $nocol"
-            CHAT_ID=$(grep 'CHAT_ID' "${SRC}/SEND_TO_TG.txt" | cut -d '=' -f2)
-            BOT_TOKEN=$(grep 'BOT_TOKEN' "${SRC}/SEND_TO_TG.txt" | cut -d '=' -f2)
-
-            # Check if credentials are still empty
-            if [[ -z "${CHAT_ID}" || -z "${BOT_TOKEN}" ]]; then
-                prompt_for_telegram_credentials
-            fi
-        else
-            log "$red CHAT_ID and BOT_TOKEN are not set and SEND_TO_TG.txt is missing. $nocol"
-            prompt_for_telegram_credentials
+            CHAT_ID="$(grep '^CHAT_ID' "${SRC}/SEND_TO_TG.txt" | cut -d'=' -f2)"
+            BOT_TOKEN="$(grep '^BOT_TOKEN' "${SRC}/SEND_TO_TG.txt" | cut -d'=' -f2)"
         fi
+    fi
+    if [[ -z "$CHAT_ID" || -z "$BOT_TOKEN" ]]; then
+        warn "Telegram credentials missing — skipping upload"
+        TELEGRAM=0
     else
-        log "$green Telegram credentials found in environment variables. $nocol"
+        ok "Telegram credentials loaded"
     fi
 }
 
-# Function to clone Proton clang if not found
-clone_proton_clang() {
-    if [ ! -d "$PROTON_PATH" ]; then
-        log "$blue Proton clang not found at $PROTON_PATH! Cloning... $nocol"
-        if ! git clone -q https://github.com/kdrag0n/proton-clang --depth=1 --single-branch "$PROTON_PATH"; then
-            log "$red Cloning failed! Aborting... $nocol"
-            exit 1
-        fi
-    else
-        log "$green Proton clang found at $PROTON_PATH $nocol"
-    fi
+sanitize_tg() {
+    echo "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
 }
 
-# Function to set environment variables
-set_env_variables() {
+tg_send_file() {
+    local file="$1" caption="$2"
+    curl -sS -F "document=@${file}" \
+        --form-string "caption=${caption}" \
+        "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument?chat_id=${CHAT_ID}&parse_mode=HTML" \
+        >/dev/null
+}
+
+send_failure_log() {
+    [[ "$TELEGRAM" -eq 1 ]] || return 0
+    local caption
+    caption="$(printf '<b>❌ Build FAILED</b>\n<b>Branch:</b> %s\n<b>Commit:</b> %s' \
+        "$(sanitize_tg "$VERSION")" \
+        "$(sanitize_tg "$(git -C "$SRC" log -1 --format=%s)")")"
+    tg_send_file "$COMPILATION_LOG" "$caption" || true
+}
+
+# ── Toolchain ─────────────────────────────────────────────────────
+setup_toolchain() {
+    if [[ ! -d "$PROTON_PATH" ]]; then
+        log "Cloning Proton Clang..."
+        git clone -q --depth=1 --single-branch \
+            https://github.com/kdrag0n/proton-clang "$PROTON_PATH" \
+            || die "Toolchain clone failed"
+    fi
     export PATH="$PROTON_PATH/bin:$PATH"
-    export ARCH=arm64
-    export SUBARCH=arm64
-    export KBUILD_COMPILER_STRING="$($PROTON_PATH/bin/clang --version | head -n 1 | perl -pe 's/\(http.*?\)//gs' | sed -e 's/  */ /g' -e 's/[[:space:]]*$//')"
-    
-    # Use ccache if the user is itachi
-    if [ "$USER" == "itachi" ]; then
+    export ARCH=arm64 SUBARCH=arm64
+    export KBUILD_COMPILER_STRING="$("$PROTON_PATH/bin/clang" --version | head -1 | sed 's/(http[^)]*)//g;s/  */ /g;s/ *$//')"
+    ok "Toolchain: $KBUILD_COMPILER_STRING"
+}
+
+# ── Ccache ────────────────────────────────────────────────────────
+setup_ccache() {
+    if command -v ccache &>/dev/null; then
         export USE_CCACHE=1
-        export CCACHE_DIR=/home/itachi/ccache/.ccache
-        export CCACHE_EXEC=$(command -v ccache)
+        export CCACHE_DIR="${HOME}/ccache/.ccache"
+        export CCACHE_EXEC="$(command -v ccache)"
         export CC="ccache clang"
         export CXX="ccache clang++"
-        ccache -M 50G
-        log "$green Using ccache for faster builds $nocol"
-    fi
-}
-
-# Function to perform clean build
-perform_clean_build() {
-    log "$blue Performing clean build... $nocol"
-    rm -rf $PWD/out/arch/arm64/boot/Image.gz
-    rm -rf KernelSU
-    rm -rf drivers/kernelsu
-    git checkout -- .
-    make clean
-    make mrproper
-    rm -rf *.log
-}
-
-# Function to build with KernelSU
-build_with_kernelsu() {
-    log "$blue Building with KernelSU... $nocol"
-    curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
-    wget -q "https://raw.githubusercontent.com/neel0210/patches/main/KSU.patch" -O KSU.patch
-    git apply ./KSU.patch
-}
-
-# Function to ask whether to build with KernelSU
-ask_build_with_kernelsu() {
-    read -p "Do you want to build with KernelSU? (y/n): " build_kernelsu
-    if [[ $build_kernelsu =~ ^[Yy]$ ]]; then
-        build_with_kernelsu
-    fi
-}
-
-# Function to build the kernel
-build_kernel() {
-    log "$blue **** Kernel defconfig is set to $KERNEL_DEFCONFIG **** $nocol"
-    log "$blue ***********************************************"
-    log "          BUILDING KAKAROT KERNEL          "
-    log "*********************************************** $nocol"
-    make $KERNEL_DEFCONFIG O=out
-    if ! make -j$(nproc --all) O=out \
-                          ARCH=arm64 \
-                          CC=clang \
-                          CROSS_COMPILE=aarch64-linux-gnu- \
-                          CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-                          AR=llvm-ar \
-                          NM=llvm-nm \
-                          OBJCOPY=llvm-objcopy \
-                          OBJDUMP=llvm-objdump \
-                          STRIP=llvm-strip \
-                          V=$VERBOSE 2>&1 | tee $COMPILATION_LOG; then
-        send_logs_and_exit
-    fi
-}
-
-# Function to send logs to Telegram and exit
-send_logs_and_exit() {
-    local caption=$(printf "<b>Branch Name:</b> %s\n<b>Last commit:</b> %s" "$(sanitize_for_telegram "$(git rev-parse --abbrev-ref HEAD)")" "$(sanitize_for_telegram "$(git log -1 --format=%B)")")
-    curl -F "document=@$COMPILATION_LOG" --form-string "caption=${caption}" "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument?chat_id=${CHAT_ID}&parse_mode=HTML"
-    exit 1
-}
-
-# Function to sanitize text for Telegram
-sanitize_for_telegram() {
-    local input="$1"
-    # Escape special characters for Telegram's HTML parse mode
-    echo "$input" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
-}
-
-# Function to verify kernel build
-verify_kernel_build() {
-    log "$blue **** Verify Image.gz & dtbo.img **** $nocol"
-    if ! ls $PWD/out/arch/arm64/boot/Image.gz; then
-        send_logs_and_exit
-    fi
-    log "$blue Image.gz found $nocol"
-
-    if ! ls $PWD/out/arch/arm64/boot/dtbo.img; then
-        send_logs_and_exit
-    fi
-    log "$blue dtbo.img found $nocol"
-
-    if ! ls $PWD/out/arch/arm64/boot/dtb.img; then
-        send_logs_and_exit
-    fi
-    log "$blue dtb.img found $nocol"
-
-    log "$blue ***********************************************"
-    log "    KERNEL COMPILATION FINISHED, STARTING ZIPPING         "
-    log "*********************************************** $nocol"
-}
-
-# Function to zip kernel files
-zip_kernel_files() {
-    log "$blue **** Verifying AnyKernel3 Directory **** $nocol"
-
-    if [ ! -d "$SRC/AnyKernel3" ]; then
-        git clone --depth=1 https://github.com/neel0210/AnyKernel3.git -b SATORU AnyKernel3
+        ccache -M 50G 2>/dev/null
+        ok "ccache enabled ($(ccache -s 2>/dev/null | grep 'cache size' | head -1 || echo 'N/A'))"
     else
-        log "$blue AnyKernel3 already present! $nocol"
-    fi
-
-    cp $SRC/out/arch/arm64/boot/Image.gz $ANYKERNEL3_DIR/
-    cp $SRC/out/arch/arm64/boot/dtbo.img $ANYKERNEL3_DIR/
-    cp $SRC/out/arch/arm64/boot/dtb.img $ANYKERNEL3_DIR/
-
-    log "$cyan ***********************************************"
-    log "          Time to zip up!          "
-    log "*********************************************** $nocol"
-
-    if [ -d "KernelSU" ]; then
-        log "Packing KSU Build"
-        cd $ANYKERNEL3_DIR/
-        FINAL_KERNEL_ZIP=KKRT-KSU-${VERSION}-${DEVICE}-$(date +"%F%S").zip
-        zip -r9 "../$FINAL_KERNEL_ZIP" * -x README "$FINAL_KERNEL_ZIP"
-    else
-        log "Packing NON-KSU Build"
-        cd $ANYKERNEL3_DIR/
-        FINAL_KERNEL_ZIP=KKRT-${VERSION}-${DEVICE}-$(date +"%F%S").zip
-        zip -r9 "../$FINAL_KERNEL_ZIP" * -x README "$FINAL_KERNEL_ZIP"
+        warn "ccache not found — building without cache"
     fi
 }
 
-# Function to compute SHA1 checksum
-compute_checksum() {
-    log "$yellow ***********************************************"
-    log "         Done, here is your sha1         "
-    log "*********************************************** $nocol"
-    cd ..
-    sha1sum $FINAL_KERNEL_ZIP
+# ── Clean ─────────────────────────────────────────────────────────
+do_clean() {
+    log "Cleaning build tree..."
+    rm -rf "${SRC}/out/arch/arm64/boot/Image.gz"
+    make -C "$SRC" clean 2>/dev/null || true
+    make -C "$SRC" mrproper 2>/dev/null || true
+    rm -f "${SRC}"/*.log
+    ok "Clean complete"
 }
 
-# Function to upload kernel to Telegram
-upload_kernel_to_telegram() {
-    log "$red ***********************************************"
-    log "         Uploading to telegram         "
-    log "*********************************************** $nocol"
-    
-    # Create the caption text
-    caption=$(printf "<b>Branch Name:</b> %s\n<b>Last commit:</b> %s" "$(sanitize_for_telegram "$(git rev-parse --abbrev-ref HEAD)")" "$(sanitize_for_telegram "$(git log -1 --format=%B)")")
+# ── KernelSU ──────────────────────────────────────────────────────
+setup_ksu() {
+    log "Setting up KernelSU..."
+    if [[ ! -d "${SRC}/KernelSU" ]]; then
+        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
+    fi
+    ok "KernelSU setup complete"
+}
 
-    # Upload Time!!
-    for i in *.zip; do
-        curl -F "document=@$i" --form-string "caption=${caption}" "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument?chat_id=${CHAT_ID}&parse_mode=HTML"
+# ── Build ─────────────────────────────────────────────────────────
+do_build() {
+    log "Building kernel (${JOBS} jobs, defconfig=${KERNEL_DEFCONFIG})..."
+    echo ""
+    echo -e "${bold}${cyan}  ┌─────────────────────────────────────┐"
+    echo "  │     BUILDING ARISE-AGAIN KERNEL     │"
+    echo -e "  └─────────────────────────────────────┘${nocol}"
+    echo ""
+
+    make -C "$SRC" "$KERNEL_DEFCONFIG" O=out ARCH=arm64 CC=clang LD=ld.lld
+
+    if ! make -C "$SRC" -j"$JOBS" O=out \
+            ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            AR=llvm-ar NM=llvm-nm \
+            OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            V="$VERBOSE" 2>&1 | tee "$COMPILATION_LOG"; then
+        die "Kernel compilation failed — check $COMPILATION_LOG"
+    fi
+}
+
+# ── Verify ────────────────────────────────────────────────────────
+verify_build() {
+    local boot="${SRC}/out/arch/arm64/boot"
+    for img in Image.gz Image.gz-dtb; do
+        [[ -f "${boot}/${img}" ]] || die "${img} not found — build failed"
     done
-    # Upload log file with branch name and last commit
-    curl -F "document=@$COMPILATION_LOG" \
-    --form-string "caption=${caption}" \
-    "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument?chat_id=${CHAT_ID}&parse_mode=HTML"
+    ok "All boot images verified"
 }
 
-# Function to clean up
-clean_up() {
-    log "$cyan ***********************************************"
-    log "          All done !!!         "
-    log "*********************************************** $nocol"
-    rm -rf $ANYKERNEL3_DIR
-}
+# ── Package ───────────────────────────────────────────────────────
+do_package() {
+    log "Packaging kernel zip..."
 
-# Function to ask whether to perform a clean build
-ask_clean_build() {
-    read -p "Do you want to perform a clean build? (y/n): " clean_build
-    if [[ $clean_build =~ ^[Yy]$ ]]; then
-        perform_clean_build
-    else
-        log "Skipping clean build..."
+    if [[ ! -d "$ANYKERNEL3_DIR" ]]; then
+        git clone --depth=1 https://github.com/neel0210/AnyKernel3.git -b SATORU "$ANYKERNEL3_DIR"
     fi
+
+    cp "${SRC}/out/arch/arm64/boot/Image.gz"      "$ANYKERNEL3_DIR/"
+    cp "${SRC}/out/arch/arm64/boot/Image.gz-dtb"  "$ANYKERNEL3_DIR/"
+    if [[ -f "${SRC}/out/arch/arm64/boot/dtb.img" ]]; then
+        cp "${SRC}/out/arch/arm64/boot/dtb.img"   "$ANYKERNEL3_DIR/"
+    fi
+    rm -f "$ANYKERNEL3_DIR/dtbo.img"
+
+    local prefix="Arise-Again"
+    [[ "$KSU" -eq 1 ]] && prefix="${prefix}-KSU"
+    FINAL_KERNEL_ZIP="${prefix}-${VERSION}-${DEVICE}-$(date +%Y%m%d-%H%M).zip"
+
+    (cd "$ANYKERNEL3_DIR" && zip -r9 "${SRC}/${FINAL_KERNEL_ZIP}" . -x README .git/\*)
+
+    local sha
+    sha="$(sha1sum "${SRC}/${FINAL_KERNEL_ZIP}" | cut -d' ' -f1)"
+    ok "Packaged: ${FINAL_KERNEL_ZIP}"
+    ok "SHA1:     ${sha}"
 }
 
-# Main script execution
-check_tools
-check_telegram_credentials
-clone_proton_clang
-set_env_variables
-ask_clean_build
-BUILD_START=$(date +"%s")
-ask_build_with_kernelsu
-build_kernel
-verify_kernel_build
-zip_kernel_files
-compute_checksum
-upload_kernel_to_telegram
+# ── Upload ────────────────────────────────────────────────────────
+do_upload() {
+    log "Uploading to Telegram..."
+    local caption
+    caption="$(printf '<b>✅ %s</b>\n<b>Branch:</b> %s\n<b>Commit:</b> %s\n<b>Built in:</b> %s' \
+        "$(sanitize_tg "$FINAL_KERNEL_ZIP")" \
+        "$(sanitize_tg "$VERSION")" \
+        "$(sanitize_tg "$(git -C "$SRC" log -1 --format=%s)")" \
+        "$(sanitize_tg "$ELAPSED")")"
+    tg_send_file "${SRC}/${FINAL_KERNEL_ZIP}" "$caption"
+    tg_send_file "$COMPILATION_LOG" "<b>Build log</b>" || true
+    ok "Upload complete"
+}
 
-BUILD_END=$(date +"%s")
-DIFF=$(($BUILD_END - $BUILD_START))
-log "$yellow Build completed in $(($DIFF / 60)) minute(s) and $(($DIFF % 60)) seconds. $nocol"
-clean_up
+# ── Cleanup ───────────────────────────────────────────────────────
+do_cleanup() {
+    rm -rf "$ANYKERNEL3_DIR"
+}
 
+# ══════════════════════════════════════════════════════════════════
+# ██  MAIN
+# ══════════════════════════════════════════════════════════════════
+main() {
+    parse_args "$@"
+    banner
+
+    # Truncate log
+    : > "$LOG_FILE"
+
+    check_tools
+    [[ "$TELEGRAM" -eq 1 ]] && load_telegram_creds
+    setup_toolchain
+    setup_ccache
+
+    # Clean if requested
+    [[ "$CLEAN" -eq 1 ]] && do_clean
+
+    # Remove old zips
+    rm -f "${SRC}"/*.zip
+
+    # KernelSU
+    [[ "$KSU" -eq 1 ]] && setup_ksu
+
+    # Build
+    local start end
+    start=$(date +%s)
+    trap 'send_failure_log' ERR
+
+    do_build
+    verify_build
+    do_package
+
+    end=$(date +%s)
+    ELAPSED="$(( (end - start) / 60 ))m $(( (end - start) % 60 ))s"
+
+    echo ""
+    echo -e "${green}${bold}  ┌─────────────────────────────────────┐"
+    echo "  │   BUILD COMPLETE: ${ELAPSED}            │"
+    echo -e "  └─────────────────────────────────────┘${nocol}"
+    echo ""
+
+    # Upload
+    [[ "$TELEGRAM" -eq 1 ]] && do_upload
+
+    do_cleanup
+    ok "All done! Kernel zip: ${FINAL_KERNEL_ZIP}"
+}
+
+main "$@"

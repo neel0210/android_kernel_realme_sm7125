@@ -1,0 +1,108 @@
+name: Build and Release Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      clean_build:
+        description: 'Perform clean build (make clean & mrproper)'
+        required: true
+        type: boolean
+        default: true
+      enable_ksu:
+        description: 'Enable KernelSU v0.9.5'
+        required: true
+        type: boolean
+        default: true
+      release_tag:
+        description: 'Release Tag (leave empty for auto timestamp)'
+        required: false
+        type: string
+        default: ''
+      release_title:
+        description: 'Release Title'
+        required: false
+        type: string
+        default: 'Arise-Again Kernel Release'
+
+jobs:
+  build:
+    name: Build Kernel
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Free Disk Space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+          sudo docker image prune --all --force 2>/dev/null || true
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            bc bison build-essential ccache curl flex gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi git libssl-dev libncurses5-dev lz4 lzop \
+            make python3 python-is-python3 zip zlib1g-dev
+
+      - name: Setup Proton Clang Toolchain
+        run: |
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git "${GITHUB_WORKSPACE}/proton"
+          echo "PROTON_PATH=${GITHUB_WORKSPACE}/proton" >> $GITHUB_ENV
+
+      - name: Run Kernel Build
+        run: |
+          BUILD_FLAGS="-d"
+          if [ "${{ github.event.inputs.clean_build }}" = "true" ]; then
+            BUILD_FLAGS="-c"
+          fi
+          if [ "${{ github.event.inputs.enable_ksu }}" = "true" ]; then
+            BUILD_FLAGS="${BUILD_FLAGS} -k"
+          fi
+          ./build.sh $BUILD_FLAGS
+
+      - name: Prepare Release Info
+        id: rel_info
+        run: |
+          ZIP_NAME=$(ls -1 Arise-Again*.zip | head -n 1)
+          SHA1=$(sha1sum "$ZIP_NAME" | awk '{print $1}')
+          TAG="${{ github.event.inputs.release_tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="v$(date +'%Y.%m.%d-%H%M')"
+          fi
+          echo "zip_name=$ZIP_NAME" >> $GITHUB_OUTPUT
+          echo "zip_path=${GITHUB_WORKSPACE}/$ZIP_NAME" >> $GITHUB_OUTPUT
+          echo "sha1=$SHA1" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.rel_info.outputs.tag }}
+          name: ${{ github.event.inputs.release_title }} (${{ steps.rel_info.outputs.tag }})
+          body: |
+            ### Arise-Again Kernel for Realme 6 Pro (RMX2061)
+
+            - **Version:** Linux 4.14.357-openela
+            - **Commit:** ${{ github.sha }}
+            - **Branch:** ${{ github.ref_name }}
+            - **Features:**
+              - Backported modern BPF/BTF verifier, ARM64 32-bit jump JIT & extended atomics
+              - Upstream EROFS and F2FS LTS updates
+              - Schedutil governor optimization (eliminated UI micro-stutters)
+              - CFS Group Scheduling (`CONFIG_FAIR_GROUP_SCHED=y`) with `top-app` priority
+              - Full Droidspace / LXC native container namespaces & cgroups
+              - KernelSU v0.9.5 kernel-level root support
+            - **Package:** `${{ steps.rel_info.outputs.zip_name }}`
+            - **SHA1:** `${{ steps.rel_info.outputs.sha1 }}`
+          files: |
+            ${{ steps.rel_info.outputs.zip_path }}
+            ${{ github.workspace }}/compilation.log
+            ${{ github.workspace }}/build.log
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
