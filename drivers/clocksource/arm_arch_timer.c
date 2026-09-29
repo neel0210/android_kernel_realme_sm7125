@@ -80,7 +80,6 @@ static bool arch_timer_mem_use_virtual;
 static bool arch_counter_suspend_stop;
 static bool vdso_default = true;
 
-static cpumask_t evtstrm_available = CPU_MASK_NONE;
 static bool evtstrm_enable = IS_ENABLED(CONFIG_ARM_ARCH_TIMER_EVTSTREAM);
 
 static int __init early_evtstrm_cfg(char *buf)
@@ -101,20 +100,20 @@ void arch_timer_reg_write(int access, enum arch_timer_reg reg, u32 val,
 		struct arch_timer *timer = to_arch_timer(clk);
 		switch (reg) {
 		case ARCH_TIMER_REG_CTRL:
-			writel_relaxed(val, timer->base + CNTP_CTL);
+			writel_relaxed_no_log(val, timer->base + CNTP_CTL);
 			break;
 		case ARCH_TIMER_REG_TVAL:
-			writel_relaxed(val, timer->base + CNTP_TVAL);
+			writel_relaxed_no_log(val, timer->base + CNTP_TVAL);
 			break;
 		}
 	} else if (access == ARCH_TIMER_MEM_VIRT_ACCESS) {
 		struct arch_timer *timer = to_arch_timer(clk);
 		switch (reg) {
 		case ARCH_TIMER_REG_CTRL:
-			writel_relaxed(val, timer->base + CNTV_CTL);
+			writel_relaxed_no_log(val, timer->base + CNTV_CTL);
 			break;
 		case ARCH_TIMER_REG_TVAL:
-			writel_relaxed(val, timer->base + CNTV_TVAL);
+			writel_relaxed_no_log(val, timer->base + CNTV_TVAL);
 			break;
 		}
 	} else {
@@ -132,20 +131,20 @@ u32 arch_timer_reg_read(int access, enum arch_timer_reg reg,
 		struct arch_timer *timer = to_arch_timer(clk);
 		switch (reg) {
 		case ARCH_TIMER_REG_CTRL:
-			val = readl_relaxed(timer->base + CNTP_CTL);
+			val = readl_relaxed_no_log(timer->base + CNTP_CTL);
 			break;
 		case ARCH_TIMER_REG_TVAL:
-			val = readl_relaxed(timer->base + CNTP_TVAL);
+			val = readl_relaxed_no_log(timer->base + CNTP_TVAL);
 			break;
 		}
 	} else if (access == ARCH_TIMER_MEM_VIRT_ACCESS) {
 		struct arch_timer *timer = to_arch_timer(clk);
 		switch (reg) {
 		case ARCH_TIMER_REG_CTRL:
-			val = readl_relaxed(timer->base + CNTV_CTL);
+			val = readl_relaxed_no_log(timer->base + CNTV_CTL);
 			break;
 		case ARCH_TIMER_REG_TVAL:
-			val = readl_relaxed(timer->base + CNTV_TVAL);
+			val = readl_relaxed_no_log(timer->base + CNTV_TVAL);
 			break;
 		}
 	} else {
@@ -291,6 +290,7 @@ static struct ate_acpi_oem_info hisi_161010101_oem_info[] = {
 };
 #endif
 
+#ifdef CONFIG_ARM_ARCH_TIMER_OOL_WORKAROUND
 #ifdef CONFIG_ARM64_ERRATUM_858921
 static u64 notrace arm64_858921_read_cntvct_el0(void)
 {
@@ -309,7 +309,6 @@ static u64 notrace arm64_1188873_read_cntvct_el0(void)
 }
 #endif
 
-#ifdef CONFIG_ARM_ARCH_TIMER_OOL_WORKAROUND
 DEFINE_PER_CPU(const struct arch_timer_erratum_workaround *,
 	       timer_unstable_counter_workaround);
 EXPORT_SYMBOL_GPL(timer_unstable_counter_workaround);
@@ -759,7 +758,6 @@ static void arch_timer_evtstrm_enable(int divider)
 #ifdef CONFIG_COMPAT
 	compat_elf_hwcap |= COMPAT_HWCAP_EVTSTRM;
 #endif
-	cpumask_set_cpu(smp_processor_id(), &evtstrm_available);
 }
 
 static void arch_timer_configure_evtstream(void)
@@ -902,22 +900,12 @@ void arch_timer_mem_get_cval(u32 *lo, u32 *hi)
 	if (!arch_counter_base)
 		return;
 
-	ctrl = readl_relaxed(arch_counter_base + CNTV_CTL);
+	ctrl = readl_relaxed_no_log(arch_counter_base + CNTV_CTL);
 
 	if (ctrl & ARCH_TIMER_CTRL_ENABLE) {
-		*lo = readl_relaxed(arch_counter_base + CNTCVAL_LO);
-		*hi = readl_relaxed(arch_counter_base + CNTCVAL_HI);
+		*lo = readl_relaxed_no_log(arch_counter_base + CNTCVAL_LO);
+		*hi = readl_relaxed_no_log(arch_counter_base + CNTCVAL_HI);
 	}
-}
-
-bool arch_timer_evtstrm_available(void)
-{
-	/*
-	 * We might get called from a preemptible context. This is fine
-	 * because availability of the event stream should be always the same
-	 * for a preemptible context and context where we might resume a task.
-	 */
-	return cpumask_test_cpu(raw_smp_processor_id(), &evtstrm_available);
 }
 
 static u64 arch_counter_get_cntvct_mem(void)
@@ -925,9 +913,9 @@ static u64 arch_counter_get_cntvct_mem(void)
 	u32 vct_lo, vct_hi, tmp_hi;
 
 	do {
-		vct_hi = readl_relaxed(arch_counter_base + CNTVCT_HI);
-		vct_lo = readl_relaxed(arch_counter_base + CNTVCT_LO);
-		tmp_hi = readl_relaxed(arch_counter_base + CNTVCT_HI);
+		vct_hi = readl_relaxed_no_log(arch_counter_base + CNTVCT_HI);
+		vct_lo = readl_relaxed_no_log(arch_counter_base + CNTVCT_LO);
+		tmp_hi = readl_relaxed_no_log(arch_counter_base + CNTVCT_HI);
 	} while (vct_hi != tmp_hi);
 
 	return ((u64) vct_hi << 32) | vct_lo;
@@ -985,8 +973,6 @@ static int arch_timer_dying_cpu(unsigned int cpu)
 {
 	struct clock_event_device *clk = this_cpu_ptr(arch_timer_evt);
 
-	cpumask_clear_cpu(smp_processor_id(), &evtstrm_available);
-
 	arch_timer_stop(clk);
 	return 0;
 }
@@ -996,16 +982,10 @@ static DEFINE_PER_CPU(unsigned long, saved_cntkctl);
 static int arch_timer_cpu_pm_notify(struct notifier_block *self,
 				    unsigned long action, void *hcpu)
 {
-	if (action == CPU_PM_ENTER) {
+	if (action == CPU_PM_ENTER)
 		__this_cpu_write(saved_cntkctl, arch_timer_get_cntkctl());
-
-		cpumask_clear_cpu(smp_processor_id(), &evtstrm_available);
-	} else if (action == CPU_PM_ENTER_FAILED || action == CPU_PM_EXIT) {
+	else if (action == CPU_PM_ENTER_FAILED || action == CPU_PM_EXIT)
 		arch_timer_set_cntkctl(__this_cpu_read(saved_cntkctl));
-
-		if (elf_hwcap & HWCAP_EVTSTRM)
-			cpumask_set_cpu(smp_processor_id(), &evtstrm_available);
-	}
 	return NOTIFY_OK;
 }
 
@@ -1080,6 +1060,7 @@ static int __init arch_timer_register(void)
 	err = arch_timer_cpu_pm_init();
 	if (err)
 		goto out_unreg_notify;
+
 
 	/* Register and immediately configure the timer on the boot CPU */
 	err = cpuhp_setup_state(CPUHP_AP_ARM_ARCH_TIMER_STARTING,
@@ -1304,7 +1285,7 @@ arch_timer_mem_find_best_frame(struct arch_timer_mem *timer_mem)
 		return NULL;
 	}
 
-	cnttidr = readl_relaxed(cntctlbase + CNTTIDR);
+	cnttidr = readl_relaxed_no_log(cntctlbase + CNTTIDR);
 
 	/*
 	 * Try to find a virtual capable frame. Otherwise fall back to a

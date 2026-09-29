@@ -793,7 +793,7 @@ static void ufshcd_cmd_log_init(struct ufs_hba *hba)
 {
 }
 
-static void __maybe_unused __ufshcd_cmd_log(struct ufs_hba *hba, char *str, char *cmd_type,
+static void __ufshcd_cmd_log(struct ufs_hba *hba, char *str, char *cmd_type,
 			     unsigned int tag, u8 cmd_id, u8 idn, u8 lun,
 			     sector_t lba, int transfer_len)
 {
@@ -903,7 +903,7 @@ static void ufshcd_print_uic_err_hist(struct ufs_hba *hba,
 		return;
 
 	for (i = 0; i < UIC_ERR_REG_HIST_LENGTH; i++) {
-		int p = (i + err_hist->pos) % UIC_ERR_REG_HIST_LENGTH;
+		int p = (i + err_hist->pos - 1) % UIC_ERR_REG_HIST_LENGTH;
 
 		if (err_hist->reg[p] == 0)
 			continue;
@@ -1993,8 +1993,16 @@ static int ufshcd_devfreq_target(struct device *dev,
 	}
 	spin_unlock_irqrestore(hba->host->host_lock, irq_flags);
 
+	pm_runtime_get_noresume(hba->dev);
+	if (!pm_runtime_active(hba->dev)) {
+		pm_runtime_put_noidle(hba->dev);
+		ret = -EAGAIN;
+		goto out;
+	}
 	start = ktime_get();
 	ret = ufshcd_devfreq_scale(hba, scale_up);
+	pm_runtime_put(hba->dev);
+
 	trace_ufshcd_profile_clk_scaling(dev_name(hba->dev),
 		(scale_up ? "up" : "down"),
 		ktime_to_us(ktime_sub(ktime_get(), start)), ret);
@@ -2186,8 +2194,6 @@ static void ufshcd_ungate_work(struct work_struct *work)
 	ufshcd_hba_vreg_set_hpm(hba);
 	ufshcd_enable_clocks(hba);
 
-	ufshcd_enable_irq(hba);
-
 	/* Exit from hibern8 */
 	if (ufshcd_can_hibern8_during_gating(hba)) {
 		/* Prevent gating in this path */
@@ -2362,8 +2368,6 @@ static void ufshcd_gate_work(struct work_struct *work)
 		ufshcd_set_link_hibern8(hba);
 	}
 
-	ufshcd_disable_irq(hba);
-
 	/*
 	 * If auto hibern8 is supported and enabled then the link will already
 	 * be in hibern8 state and the ref clock can be gated.
@@ -2533,19 +2537,19 @@ static ssize_t ufshcd_clkgate_enable_store(struct device *dev,
 		return -EINVAL;
 
 	value = !!value;
+
+	spin_lock_irqsave(hba->host->host_lock, flags);
 	if (value == hba->clk_gating.is_enabled)
 		goto out;
 
-	if (value) {
-		ufshcd_release(hba, false);
-	} else {
-		spin_lock_irqsave(hba->host->host_lock, flags);
+	if (value)
+		hba->clk_gating.active_reqs--;
+	else
 		hba->clk_gating.active_reqs++;
-		spin_unlock_irqrestore(hba->host->host_lock, flags);
-	}
 
 	hba->clk_gating.is_enabled = value;
 out:
+	spin_unlock_irqrestore(hba->host->host_lock, flags);
 	return count;
 }
 
@@ -2588,8 +2592,8 @@ static void ufshcd_init_clk_gating(struct ufs_hba *hba)
 
 	snprintf(wq_name, ARRAY_SIZE(wq_name), "ufs_clk_gating_%d",
 			hba->host->host_no);
-	hba->clk_gating.clk_gating_workq = alloc_ordered_workqueue(wq_name,
-					WQ_MEM_RECLAIM | WQ_HIGHPRI);
+	hba->clk_gating.clk_gating_workq =
+		create_singlethread_workqueue(wq_name);
 
 	gating->is_enabled = true;
 
@@ -2955,15 +2959,19 @@ static ssize_t ufshcd_hibern8_on_idle_enable_show(struct device *dev,
 			hba->hibern8_on_idle.is_enabled);
 }
 
-
-static void ufshcd_hibern8_on_idle_switch_work(struct work_struct *work)
+static ssize_t ufshcd_hibern8_on_idle_enable_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
 {
-	struct ufs_hba *hba;
+	struct ufs_hba *hba = dev_get_drvdata(dev);
 	unsigned long flags;
 	u32 value;
 
-	hba = container_of(work, struct ufs_hba, hibern8_on_idle_enable_work);
-	value = !hba->hibern8_on_idle.is_enabled;
+	if (kstrtou32(buf, 0, &value))
+		return -EINVAL;
+
+	value = !!value;
+	if (value == hba->hibern8_on_idle.is_enabled)
+		goto out;
 
 	/* Update auto hibern8 timer value if supported */
 	if (ufshcd_is_auto_hibern8_supported(hba)) {
@@ -2987,31 +2995,6 @@ static void ufshcd_hibern8_on_idle_switch_work(struct work_struct *work)
 
 	hba->hibern8_on_idle.is_enabled = value;
 out:
-	return;
-}
-
-static ssize_t ufshcd_hibern8_on_idle_enable_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t count)
-{
-	struct ufs_hba *hba = dev_get_drvdata(dev);
-	u32 value;
-
-	if (!ufshcd_is_hibern8_on_idle_allowed(hba))
-		return count;
-
-	if (kstrtou32(buf, 0, &value))
-		return -EINVAL;
-
-	mutex_lock(&hba->hibern8_on_idle.enable_mutex);
-	/*
-	 * make sure that former operation has been done before we exectue
-	 * next action. This could gareatee the order and synconization.
-	 */
-	flush_work(&hba->hibern8_on_idle_enable_work);
-	if (hba->hibern8_on_idle.is_enabled != !!value)
-		schedule_work(&hba->hibern8_on_idle_enable_work);
-	mutex_unlock(&hba->hibern8_on_idle.enable_mutex);
-
 	return count;
 }
 
@@ -5237,11 +5220,16 @@ static inline void ufshcd_add_delay_before_dme_cmd(struct ufs_hba *hba)
 			min_sleep_time_us =
 				MIN_DELAY_BEFORE_DME_CMDS_US - delta;
 		else
-			return; /* no more delay required */
+			min_sleep_time_us = 0; /* no more delay required */
 	}
 
-	/* allow sleep for extra 50us if needed */
-	usleep_range(min_sleep_time_us, min_sleep_time_us + 50);
+	if (min_sleep_time_us > 0) {
+		/* allow sleep for extra 50us if needed */
+		usleep_range(min_sleep_time_us, min_sleep_time_us + 50);
+	}
+
+	/* update the last_dme_cmd_tstamp */
+	hba->last_dme_cmd_tstamp = ktime_get();
 }
 
 static inline void ufshcd_save_tstamp_of_last_dme_cmd(
@@ -5415,7 +5403,7 @@ static int ufshcd_uic_pwr_ctrl(struct ufs_hba *hba, struct uic_command *cmd)
 		 * Make sure UIC command completion interrupt is disabled before
 		 * issuing UIC command.
 		 */
-		wmb();
+		ufshcd_readl(hba, REG_INTERRUPT_ENABLE);
 		reenable_intr = true;
 	}
 	ret = __ufshcd_send_uic_cmd(hba, cmd, false);
@@ -8068,20 +8056,17 @@ static int ufshcd_eh_device_reset_handler(struct scsi_cmnd *cmd)
 {
 	struct Scsi_Host *host;
 	struct ufs_hba *hba;
-	unsigned int tag;
 	u32 pos;
 	int err;
-	u8 resp = 0xF;
-	struct ufshcd_lrb *lrbp;
+	u8 resp = 0xF, lun;
 	unsigned long flags;
 
 	host = cmd->device->host;
 	hba = shost_priv(host);
-	tag = cmd->request->tag;
 
 	ufshcd_print_cmd_log(hba);
-	lrbp = &hba->lrb[tag];
-	err = ufshcd_issue_tm_cmd(hba, lrbp->lun, 0, UFS_LOGICAL_RESET, &resp);
+	lun = ufshcd_scsi_to_upiu_lun(cmd->device->lun);
+	err = ufshcd_issue_tm_cmd(hba, lun, 0, UFS_LOGICAL_RESET, &resp);
 	if (err || resp != UPIU_TASK_MANAGEMENT_FUNC_COMPL) {
 		if (!err)
 			err = resp;
@@ -8090,7 +8075,7 @@ static int ufshcd_eh_device_reset_handler(struct scsi_cmnd *cmd)
 
 	/* clear the commands that were pending for corresponding LUN */
 	for_each_set_bit(pos, &hba->outstanding_reqs, hba->nutrs) {
-		if (hba->lrb[pos].lun == lrbp->lun) {
+		if (hba->lrb[pos].lun == lun) {
 			err = ufshcd_clear_cmd(hba, pos);
 			if (err)
 				break;
@@ -8357,12 +8342,8 @@ static int ufshcd_host_reset_and_restore(struct ufs_hba *hba)
 	ufshcd_set_clk_freq(hba, true);
 
 	err = ufshcd_hba_enable(hba);
-	if (err) {
-		/* ufshcd_probe_hba() will put it */
-		if (!ufshcd_eh_in_progress(hba) && !hba->pm_op_in_progress)
-			pm_runtime_put_sync(hba->dev);
+	if (err)
 		goto out;
-	}
 
 	/* Establish the link again and restore the device */
 	err = ufshcd_probe_hba(hba);
@@ -8413,8 +8394,6 @@ static int ufshcd_reset_and_restore(struct ufs_hba *hba)
 	ufshcd_enable_irq(hba);
 
 	do {
-		if (!ufshcd_eh_in_progress(hba) && !hba->pm_op_in_progress)
-			pm_runtime_get_sync(hba->dev);
 		err = ufshcd_detect_device(hba);
 	} while (err && --retries);
 
@@ -11052,7 +11031,11 @@ int ufshcd_system_resume(struct ufs_hba *hba)
 	if (!hba)
 		return -EINVAL;
 
-	if (!hba->is_powered)
+	if (!hba->is_powered || pm_runtime_suspended(hba->dev))
+		/*
+		 * Let the runtime resume take care of resuming
+		 * if runtime suspended.
+		 */
 		goto out;
 	else
 		ret = ufshcd_resume(hba, UFS_SYSTEM_PM);
@@ -11060,15 +11043,8 @@ out:
 	trace_ufshcd_system_resume(dev_name(hba->dev), ret,
 		ktime_to_us(ktime_sub(ktime_get(), start)),
 		hba->curr_dev_pwr_mode, hba->uic_link_state);
-	if (!ret) {
+	if (!ret)
 		hba->is_sys_suspended = false;
-
-		if (pm_runtime_suspended(hba->dev)) {
-			pm_runtime_disable(hba->dev);
-			pm_runtime_set_active(hba->dev);
-			pm_runtime_enable(hba->dev);
-		}
-	}
 	return ret;
 }
 EXPORT_SYMBOL(ufshcd_system_resume);
@@ -11756,15 +11732,12 @@ int ufshcd_init(struct ufs_hba *hba, void __iomem *mmio_base, unsigned int irq)
 	INIT_WORK(&hba->eeh_work, ufshcd_exception_event_handler);
 	INIT_WORK(&hba->card_detect_work, ufshcd_card_detect_handler);
 	INIT_WORK(&hba->rls_work, ufshcd_rls_handler);
-	INIT_WORK(&hba->hibern8_on_idle_enable_work,
-			ufshcd_hibern8_on_idle_switch_work);
 
 	/* Initialize UIC command mutex */
 	mutex_init(&hba->uic_cmd_mutex);
 
 	/* Initialize mutex for device management commands */
 	mutex_init(&hba->dev_cmd.lock);
-	mutex_init(&hba->hibern8_on_idle.enable_mutex);
 
 	init_rwsem(&hba->lock);
 
@@ -11786,7 +11759,7 @@ int ufshcd_init(struct ufs_hba *hba, void __iomem *mmio_base, unsigned int irq)
 	 * Make sure that UFS interrupts are disabled and any pending interrupt
 	 * status is cleared before registering UFS interrupt handler.
 	 */
-	mb();
+	ufshcd_readl(hba, REG_INTERRUPT_ENABLE);
 
 	/* IRQ registration */
 	err = devm_request_irq(dev, irq, ufshcd_intr, IRQF_SHARED,
@@ -11798,7 +11771,6 @@ int ufshcd_init(struct ufs_hba *hba, void __iomem *mmio_base, unsigned int irq)
 		hba->is_irq_enabled = true;
 	}
 
-	irq_set_affinity(irq, cpumask_of(1));
 	err = scsi_add_host(host, hba->dev);
 	if (err) {
 		dev_err(hba->dev, "scsi_add_host failed\n");
@@ -11889,8 +11861,6 @@ int ufshcd_init(struct ufs_hba *hba, void __iomem *mmio_base, unsigned int irq)
 	ufsdbg_add_debugfs(hba);
 
 	ufshcd_add_sysfs_nodes(hba);
-
-	device_enable_async_suspend(dev);
 
 	return 0;
 

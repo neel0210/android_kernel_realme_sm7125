@@ -131,6 +131,8 @@ static ssize_t mem_sleep_store(struct kobject *kobj, struct kobj_attribute *attr
 	suspend_state_t state;
 	int error;
 
+	/* Don't allow userspace to select s2idle */
+	return n;
 	error = pm_autosleep_lock();
 	if (error)
 		return error;
@@ -210,6 +212,11 @@ static ssize_t pm_test_store(struct kobject *kobj, struct kobj_attribute *attr,
 		}
 
 	unlock_system_sleep();
+#ifdef OPLUS_FEATURE_POWERINFO_STANDBY_DEBUG
+//Nanwei.Deng@BSP.CHG.Basic 2018/05/03 modify for power debug
+	pr_info("%s buf:%s, pm_test_level:%d,level:%d\n", __func__, buf,
+		pm_test_level, level);
+#endif /* VENDOR_EDIT */
 
 	return error ? error : n;
 }

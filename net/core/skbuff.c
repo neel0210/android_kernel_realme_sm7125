@@ -338,6 +338,33 @@ nodata:
 }
 EXPORT_SYMBOL(__alloc_skb);
 
+/* Caller must provide SKB that is memset cleared */
+static struct sk_buff *__build_skb_around(struct sk_buff *skb,
+					  void *data, unsigned int frag_size)
+{
+	struct skb_shared_info *shinfo;
+	unsigned int size = frag_size ? : ksize(data);
+
+	size -= SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+
+	/* Assumes caller memset cleared SKB */
+	skb->truesize = SKB_TRUESIZE(size);
+	refcount_set(&skb->users, 1);
+	skb->head = data;
+	skb->data = data;
+	skb_reset_tail_pointer(skb);
+	skb->end = skb->tail + size;
+	skb->mac_header = (typeof(skb->mac_header))~0U;
+	skb->transport_header = (typeof(skb->transport_header))~0U;
+
+	/* make sure we initialize shinfo sequentially */
+	shinfo = skb_shinfo(skb);
+	memset(shinfo, 0, offsetof(struct skb_shared_info, dataref));
+	atomic_set(&shinfo->dataref, 1);
+
+	return skb;
+}
+
 /**
  * __build_skb - build a network buffer
  * @data: data buffer provided by caller
@@ -359,32 +386,15 @@ EXPORT_SYMBOL(__alloc_skb);
  */
 struct sk_buff *__build_skb(void *data, unsigned int frag_size)
 {
-	struct skb_shared_info *shinfo;
 	struct sk_buff *skb;
-	unsigned int size = frag_size ? : ksize(data);
 
 	skb = kmem_cache_alloc(skbuff_head_cache, GFP_ATOMIC);
-	if (!skb)
+	if (unlikely(!skb))
 		return NULL;
 
-	size -= SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
-
 	memset(skb, 0, offsetof(struct sk_buff, tail));
-	skb->truesize = SKB_TRUESIZE(size);
-	refcount_set(&skb->users, 1);
-	skb->head = data;
-	skb->data = data;
-	skb_reset_tail_pointer(skb);
-	skb->end = skb->tail + size;
-	skb->mac_header = (typeof(skb->mac_header))~0U;
-	skb->transport_header = (typeof(skb->transport_header))~0U;
 
-	/* make sure we initialize shinfo sequentially */
-	shinfo = skb_shinfo(skb);
-	memset(shinfo, 0, offsetof(struct skb_shared_info, dataref));
-	atomic_set(&shinfo->dataref, 1);
-
-	return skb;
+	return __build_skb_around(skb, data, frag_size);
 }
 
 /* build_skb() is wrapper over __build_skb(), that specifically
@@ -404,6 +414,29 @@ struct sk_buff *build_skb(void *data, unsigned int frag_size)
 	return skb;
 }
 EXPORT_SYMBOL(build_skb);
+
+/**
+ * build_skb_around - build a network buffer around provided skb
+ * @skb: sk_buff provide by caller, must be memset cleared
+ * @data: data buffer provided by caller
+ * @frag_size: size of data, or 0 if head was kmalloced
+ */
+struct sk_buff *build_skb_around(struct sk_buff *skb,
+				 void *data, unsigned int frag_size)
+{
+	if (unlikely(!skb))
+		return NULL;
+
+	skb = __build_skb_around(skb, data, frag_size);
+
+	if (skb && frag_size) {
+		skb->head_frag = 1;
+		if (page_is_pfmemalloc(virt_to_head_page(data)))
+			skb->pfmemalloc = 1;
+	}
+	return skb;
+}
+EXPORT_SYMBOL(build_skb_around);
 
 #define NAPI_SKB_CACHE_SIZE	64
 
@@ -485,6 +518,9 @@ struct sk_buff *__netdev_alloc_skb(struct net_device *dev, unsigned int len,
 	void *data;
 
 	len += NET_SKB_PAD;
+
+	if (IS_ENABLED(CONFIG_FORCE_ALLOC_FROM_DMA_ZONE))
+		gfp_mask |= GFP_DMA;
 
 	/* If requested length is either too small or too big,
 	 * we use kmalloc() for skb->head allocation.
@@ -805,8 +841,7 @@ EXPORT_SYMBOL(kfree_skb_list);
  */
 void skb_tx_error(struct sk_buff *skb)
 {
-	if (skb)
-		skb_zcopy_clear(skb, true);
+	skb_zcopy_clear(skb, true);
 }
 EXPORT_SYMBOL(skb_tx_error);
 
@@ -1645,6 +1680,8 @@ int pskb_expand_head(struct sk_buff *skb, int nhead, int ntail,
 	skb->hdr_len  = 0;
 	skb->nohdr    = 0;
 	atomic_set(&skb_shinfo(skb)->dataref, 1);
+
+	skb_metadata_clear(skb);
 
 	/* It is not generally safe to change skb->truesize.
 	 * For the moment, we really care of rx path, or
@@ -3735,8 +3772,9 @@ struct sk_buff *skb_segment(struct sk_buff *head_skb,
 		/* GSO partial only requires that we trim off any excess that
 		 * doesn't fit into an MSS sized block, so take care of that
 		 * now.
+		 * Cap len to not accidentally hit GSO_BY_FRAGS.
 		 */
-		partial_segs = len / mss;
+		partial_segs = min(len, (unsigned int)(GSO_BY_FRAGS - 1)) / mss;
 		if (partial_segs > 1)
 			mss *= partial_segs;
 		else
@@ -5370,32 +5408,40 @@ int skb_vlan_push(struct sk_buff *skb, __be16 vlan_proto, u16 vlan_tci)
 EXPORT_SYMBOL(skb_vlan_push);
 
 /**
- * alloc_skb_frags - allocate page frags for skb
+ * alloc_skb_with_frags - allocate skb with page frags
  *
- * @skb: buffer
+ * @header_len: size of linear part
  * @data_len: needed length in frags
  * @max_page_order: max page order desired.
  * @errcode: pointer to error code if any
  * @gfp_mask: allocation mask
  *
- * This can be used to allocate pages for skb, given a maximal order for frags.
+ * This can be used to allocate a paged skb, given a maximal order for frags.
  */
-struct sk_buff *alloc_skb_frags(struct sk_buff *skb,
-				unsigned long data_len,
-				int max_page_order,
-				int *errcode,
-				gfp_t gfp_mask)
+struct sk_buff *alloc_skb_with_frags(unsigned long header_len,
+				     unsigned long data_len,
+				     int max_page_order,
+				     int *errcode,
+				     gfp_t gfp_mask)
 {
 	int npages = (data_len + (PAGE_SIZE - 1)) >> PAGE_SHIFT;
 	unsigned long chunk;
+	struct sk_buff *skb;
 	struct page *page;
 	int i;
 
+	*errcode = -EMSGSIZE;
 	/* Note this test could be relaxed, if we succeed to allocate
 	 * high order pages...
 	 */
-	if (unlikely(npages > MAX_SKB_FRAGS))
-		goto failure;
+	if (npages > MAX_SKB_FRAGS)
+		return NULL;
+
+	*errcode = -ENOBUFS;
+	skb = alloc_skb(header_len, gfp_mask);
+	if (!skb)
+		return NULL;
+
 	skb->truesize += npages << PAGE_SHIFT;
 
 	for (i = 0; npages > 0; i++) {
@@ -5430,10 +5476,9 @@ fill_page:
 
 failure:
 	kfree_skb(skb);
-	*errcode = -EMSGSIZE;
 	return NULL;
 }
-EXPORT_SYMBOL(alloc_skb_frags);
+EXPORT_SYMBOL(alloc_skb_with_frags);
 
 /* carve out the first off bytes from skb when off < headlen */
 static int pskb_carve_inside_header(struct sk_buff *skb, const u32 off,

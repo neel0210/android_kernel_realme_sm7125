@@ -19,6 +19,9 @@
 #include <linux/page-flags-layout.h>
 #include <linux/atomic.h>
 #include <asm/page.h>
+#if defined(OPLUS_FEATURE_MULTI_KSWAPD) && defined(CONFIG_OPLUS_MULTI_KSWAPD)
+#include <linux/multi_kswapd.h>
+#endif /*OPLUS_FEATURE_MULTI_KSWAPD*/
 /* Free memory management - zoned buddy allocator.  */
 #ifndef CONFIG_FORCE_MAX_ZONEORDER
 #define MAX_ORDER 11
@@ -685,8 +688,12 @@ typedef struct pglist_data {
 	int node_id;
 	wait_queue_head_t kswapd_wait;
 	wait_queue_head_t pfmemalloc_wait;
+#if defined(OPLUS_FEATURE_MULTI_KSWAPD) && defined(CONFIG_OPLUS_MULTI_KSWAPD)
+	struct task_struct *kswapd[MAX_KSWAPD_THREADS];
+#else
 	struct task_struct *kswapd;	/* Protected by
 					   mem_hotplug_begin/end() */
+#endif /*OPLUS_FEATURE_MULTI_KSWAPD*/
 	int kswapd_order;
 	enum zone_type kswapd_classzone_idx;
 
@@ -921,21 +928,21 @@ static inline int is_highmem(struct zone *zone)
 /* These two functions are used to setup the per zone pages min values */
 struct ctl_table;
 int min_free_kbytes_sysctl_handler(struct ctl_table *, int,
-					void __user *, size_t *, loff_t *);
+					void *, size_t *, loff_t *);
 int watermark_scale_factor_sysctl_handler(struct ctl_table *, int,
-					void __user *, size_t *, loff_t *);
+					void *, size_t *, loff_t *);
 extern int sysctl_lowmem_reserve_ratio[MAX_NR_ZONES-1];
-int lowmem_reserve_ratio_sysctl_handler(struct ctl_table *, int,
-					void __user *, size_t *, loff_t *);
+int lowmem_reserve_ratio_sysctl_handler(struct ctl_table *, int, void *,
+		size_t *, loff_t *);
 int percpu_pagelist_fraction_sysctl_handler(struct ctl_table *, int,
-					void __user *, size_t *, loff_t *);
+		void *, size_t *, loff_t *);
 int sysctl_min_unmapped_ratio_sysctl_handler(struct ctl_table *, int,
-			void __user *, size_t *, loff_t *);
+		void *, size_t *, loff_t *);
 int sysctl_min_slab_ratio_sysctl_handler(struct ctl_table *, int,
-			void __user *, size_t *, loff_t *);
+			void *, size_t *, loff_t *);
 
-extern int numa_zonelist_order_handler(struct ctl_table *, int,
-			void __user *, size_t *, loff_t *);
+int numa_zonelist_order_handler(struct ctl_table *, int,
+			void *, size_t *, loff_t *);
 extern char numa_zonelist_order[];
 #define NUMA_ZONELIST_ORDER_LEN	16
 

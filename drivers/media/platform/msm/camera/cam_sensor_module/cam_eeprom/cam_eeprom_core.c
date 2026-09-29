@@ -1,4 +1,5 @@
 /* Copyright (c) 2017-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -359,6 +360,10 @@ static int32_t cam_eeprom_get_dev_handle(struct cam_eeprom_ctrl_t *e_ctrl,
 	bridge_params.dev_id = CAM_EEPROM;
 	eeprom_acq_dev.device_handle =
 		cam_create_device_hdl(&bridge_params);
+	if (eeprom_acq_dev.device_handle <= 0) {
+		CAM_ERR(CAM_EEPROM, "Can not create device handle");
+		return -EFAULT;
+	}
 	e_ctrl->bridge_intf.device_hdl = eeprom_acq_dev.device_handle;
 	e_ctrl->bridge_intf.session_hdl = eeprom_acq_dev.session_handle;
 
@@ -438,17 +443,32 @@ static int32_t cam_eeprom_parse_memory_map(
 	else if (cmm_hdr->cmd_type == CAMERA_SENSOR_CMD_TYPE_WAIT)
 		validate_size = sizeof(struct cam_cmd_unconditional_wait);
 
-	if (remain_buf_len < validate_size) {
+	if (remain_buf_len < validate_size ||
+	    *num_map >= (MSM_EEPROM_MAX_MEM_MAP_CNT *
+		MSM_EEPROM_MEMORY_MAP_MAX_SIZE)) {
 		CAM_ERR(CAM_EEPROM, "not enough buffer");
 		return -EINVAL;
 	}
 	switch (cmm_hdr->cmd_type) {
 	case CAMERA_SENSOR_CMD_TYPE_I2C_RNDM_WR:
 		i2c_random_wr = (struct cam_cmd_i2c_random_wr *)cmd_buf;
+
+		if (i2c_random_wr->header.count == 0 ||
+		    i2c_random_wr->header.count >= MSM_EEPROM_MAX_MEM_MAP_CNT ||
+		    (size_t)*num_map >= ((MSM_EEPROM_MAX_MEM_MAP_CNT *
+				MSM_EEPROM_MEMORY_MAP_MAX_SIZE) -
+				i2c_random_wr->header.count)) {
+			CAM_ERR(CAM_EEPROM, "OOB Error");
+			return -EINVAL;
+		}
 		cmd_length_in_bytes   = sizeof(struct cam_cmd_i2c_random_wr) +
 			((i2c_random_wr->header.count - 1) *
 			sizeof(struct i2c_random_wr_payload));
 
+		if (cmd_length_in_bytes > remain_buf_len) {
+			CAM_ERR(CAM_EEPROM, "Not enough buffer remaining");
+			return -EINVAL;
+		}
 		for (cnt = 0; cnt < (i2c_random_wr->header.count);
 			cnt++) {
 			map[*num_map + cnt].page.addr =
@@ -471,6 +491,11 @@ static int32_t cam_eeprom_parse_memory_map(
 		i2c_cont_rd = (struct cam_cmd_i2c_continuous_rd *)cmd_buf;
 		cmd_length_in_bytes = sizeof(struct cam_cmd_i2c_continuous_rd);
 
+		if (i2c_cont_rd->header.count >= U32_MAX - data->num_data) {
+			CAM_ERR(CAM_EEPROM,
+				"int overflow on eeprom memory block");
+			return -EINVAL;
+		}
 		map[*num_map].mem.addr = i2c_cont_rd->reg_addr;
 		map[*num_map].mem.addr_type = i2c_cont_rd->header.addr_type;
 		map[*num_map].mem.data_type = i2c_cont_rd->header.data_type;
@@ -623,6 +648,13 @@ static int32_t cam_eeprom_init_pkt_parser(struct cam_eeprom_ctrl_t *e_ctrl,
 				if ((remain_len - processed_cmd_buf_in_bytes) <
 					sizeof(struct cam_cmd_i2c_info)) {
 					CAM_ERR(CAM_EEPROM, "Not enough buf");
+					rc = -EINVAL;
+					goto rel_cmd_buf;
+				}
+				if ((num_map + 1) >=
+					(MSM_EEPROM_MAX_MEM_MAP_CNT *
+					MSM_EEPROM_MEMORY_MAP_MAX_SIZE)) {
+					CAM_ERR(CAM_EEPROM, "OOB error");
 					rc = -EINVAL;
 					goto rel_cmd_buf;
 				}

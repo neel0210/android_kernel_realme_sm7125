@@ -91,6 +91,7 @@ struct msm_pinctrl {
 	const struct msm_pinctrl_soc_data *soc;
 	void __iomem *regs;
 	void __iomem *pdc_regs;
+	void __iomem *spi_base;
 #ifdef CONFIG_FRAGMENTED_GPIO_ADDRESS_SPACE
 	/* For holding per tile virtual address */
 	void __iomem *per_tile_regs[4];
@@ -517,7 +518,7 @@ static int msm_gpio_direction_output(struct gpio_chip *chip, unsigned offset, in
 
 	val = readl_relaxed(base + g->ctl_reg);
 	val |= BIT(g->oe_bit);
-	writel(val, base + g->ctl_reg);
+	writel_relaxed(val, base + g->ctl_reg);
 
 	raw_spin_unlock_irqrestore(&pctrl->lock, flags);
 
@@ -673,11 +674,11 @@ static void msm_gpio_update_dual_edge_pos(struct msm_pinctrl *pctrl,
 
 	base = reassign_pctrl_reg(pctrl->soc, d->hwirq);
 	do {
-		val = readl(base + g->io_reg) & BIT(g->in_bit);
+		val = readl_relaxed(base + g->io_reg) & BIT(g->in_bit);
 
 		pol = readl_relaxed(base + g->intr_cfg_reg);
 		pol ^= BIT(g->intr_polarity_bit);
-		writel(pol, base + g->intr_cfg_reg);
+		writel_relaxed(pol, base + g->intr_cfg_reg);
 
 		val2 = readl_relaxed(base + g->io_reg) & BIT(g->in_bit);
 		intstat = readl_relaxed(base + g->intr_status_reg);
@@ -703,29 +704,6 @@ static void msm_gpio_irq_mask(struct irq_data *d)
 	raw_spin_lock_irqsave(&pctrl->lock, flags);
 
 	val = readl_relaxed(base + g->intr_cfg_reg);
-	/*
-	 * There are two bits that control interrupt forwarding to the CPU. The
-	 * RAW_STATUS_EN bit causes the level or edge sensed on the line to be
-	 * latched into the interrupt status register when the hardware detects
-	 * an irq that it's configured for (either edge for edge type or level
-	 * for level type irq). The 'non-raw' status enable bit causes the
-	 * hardware to assert the summary interrupt to the CPU if the latched
-	 * status bit is set. There's a bug though, the edge detection logic
-	 * seems to have a problem where toggling the RAW_STATUS_EN bit may
-	 * cause the status bit to latch spuriously when there isn't any edge
-	 * so we can't touch that bit for edge type irqs and we have to keep
-	 * the bit set anyway so that edges are latched while the line is masked.
-	 *
-	 * To make matters more complicated, leaving the RAW_STATUS_EN bit
-	 * enabled all the time causes level interrupts to re-latch into the
-	 * status register because the level is still present on the line after
-	 * we ack it. We clear the raw status enable bit during mask here and
-	 * set the bit on unmask so the interrupt can't latch into the hardware
-	 * while it's masked.
-	 */
-	if (irqd_get_trigger_type(d) & IRQ_TYPE_LEVEL_MASK)
-		val &= ~BIT(g->intr_raw_status_bit);
-
 	val &= ~BIT(g->intr_enable_bit);
 	writel_relaxed(val, base + g->intr_cfg_reg);
 
@@ -760,7 +738,7 @@ static void msm_gpio_irq_enable(struct irq_data *d)
 
 	val = readl_relaxed(base + g->intr_cfg_reg);
 	val |= BIT(g->intr_enable_bit);
-	writel(val, base + g->intr_cfg_reg);
+	writel_relaxed(val, base + g->intr_cfg_reg);
 
 	set_bit(d->hwirq, pctrl->enabled_irqs);
 
@@ -792,7 +770,6 @@ static void msm_gpio_irq_unmask(struct irq_data *d)
 	}
 
 	val = readl_relaxed(base + g->intr_cfg_reg);
-	val |= BIT(g->intr_raw_status_bit);
 	val |= BIT(g->intr_enable_bit);
 	writel_relaxed(val, base + g->intr_cfg_reg);
 
@@ -912,7 +889,7 @@ static int msm_gpio_irq_set_type(struct irq_data *d, unsigned int type)
 	} else {
 		BUG();
 	}
-	writel(val, base + g->intr_cfg_reg);
+	writel_relaxed(val, base + g->intr_cfg_reg);
 
 	if (test_bit(d->hwirq, pctrl->dual_edge_irqs))
 		msm_gpio_update_dual_edge_pos(pctrl, g, d);
@@ -934,8 +911,13 @@ static int msm_gpio_irq_set_wake(struct irq_data *d, unsigned int on)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
 	struct msm_pinctrl *pctrl = gpiochip_get_data(gc);
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&pctrl->lock, flags);
 
 	irq_set_irq_wake(pctrl->irq, on);
+
+	raw_spin_unlock_irqrestore(&pctrl->lock, flags);
 
 	if (d->parent_data)
 		irq_chip_set_wake_parent(d, on);
@@ -1453,6 +1435,7 @@ static void add_dirconn_tlmm(struct irq_data *d, irq_hw_number_t irq)
 	struct msm_pinctrl *pctrl;
 	phys_addr_t spi_cfg_reg = 0;
 	unsigned long flags;
+	u32 offset_local;
 
 	offset = select_dir_conn_mux(d, &irq);
 	if (offset < 0 || !parent_data)
@@ -1473,16 +1456,19 @@ static void add_dirconn_tlmm(struct irq_data *d, irq_hw_number_t irq)
 		if (pctrl->spi_cfg_regs) {
 			spi_cfg_reg = pctrl->spi_cfg_regs +
 					((dir_conn_data->hwirq - 32) / 32) * 4;
+			offset_local = ((dir_conn_data->hwirq - 32) / 32) * 4;
 			if (spi_cfg_reg < pctrl->spi_cfg_end) {
 				raw_spin_lock_irqsave(&pctrl->lock, flags);
-				val = scm_io_read(spi_cfg_reg);
+				val = readl_relaxed(pctrl->spi_base
+							+ offset_local);
 				/*
 				 * Clear the respective bit for edge type
 				 * interrupt
 				 */
 				val &= ~(1 << ((dir_conn_data->hwirq - 32)
 									% 32));
-				WARN_ON(scm_io_write(spi_cfg_reg, val));
+				writel_relaxed(val, pctrl->spi_base
+							+ offset_local);
 				raw_spin_unlock_irqrestore(&pctrl->lock, flags);
 			} else
 				pr_err("%s: type config failed for SPI: %lu\n",
@@ -1536,6 +1522,7 @@ static int msm_dirconn_irq_set_type(struct irq_data *d, unsigned int type)
 	unsigned int config_val = 0;
 	unsigned int val = 0;
 	unsigned long flags;
+	u32 offset_local;
 
 	if (!parent_data)
 		return 0;
@@ -1563,13 +1550,14 @@ static int msm_dirconn_irq_set_type(struct irq_data *d, unsigned int type)
 	if (pctrl->spi_cfg_regs && type != IRQ_TYPE_NONE) {
 		spi_cfg_reg = pctrl->spi_cfg_regs +
 				((parent_data->hwirq - 32) / 32) * 4;
+		offset_local = ((parent_data->hwirq - 32) / 32) * 4;
 		if (spi_cfg_reg < pctrl->spi_cfg_end) {
 			raw_spin_lock_irqsave(&pctrl->lock, flags);
-			val = scm_io_read(spi_cfg_reg);
+			val = readl_relaxed(pctrl->spi_base + offset_local);
 			val &= ~(1 << ((parent_data->hwirq - 32) % 32));
 			if (config_val)
 				val |= (1 << ((parent_data->hwirq - 32)  % 32));
-			WARN_ON(scm_io_write(spi_cfg_reg, val));
+			writel_relaxed(val, pctrl->spi_base + offset_local);
 			raw_spin_unlock_irqrestore(&pctrl->lock, flags);
 		} else
 			pr_err("%s: type config failed for SPI: %lu\n",
@@ -1846,12 +1834,6 @@ static void msm_pinctrl_setup_pm_reset(struct msm_pinctrl *pctrl)
 }
 
 #ifdef CONFIG_PM
-#ifdef CONFIG_QCOM_SHOW_RESUME_IRQ
-extern int msm_show_resume_irq_mask;
-#else
-#define msm_show_resume_irq_mask 0
-#endif
-
 #ifdef CONFIG_HIBERNATION
 static bool hibernation;
 
@@ -1930,7 +1912,7 @@ static int msm_pinctrl_hibernation_suspend(void)
 		spi_cfg_reg = pctrl->spi_cfg_regs;
 		for (j = 0; j < spi_cfg_regs_count; j++)
 			pctrl->spi_cfg_regs_val[j] =
-				scm_io_read(spi_cfg_reg + j * 4);
+				readl_relaxed(pctrl->spi_base + j * 4);
 	}
 	/* All normal gpios will have common registers, first save them */
 	for (i = 0; i < soc->ngpios; i++) {
@@ -1987,8 +1969,8 @@ static void msm_pinctrl_hibernation_resume(void)
 				pctrl->spi_cfg_regs) / 4 + 2;
 		spi_cfg_reg = pctrl->spi_cfg_regs;
 		for (j = 0; j < spi_cfg_regs_count; j++)
-			WARN_ON(scm_io_write(spi_cfg_reg + j * 4,
-				pctrl->spi_cfg_regs_val[j]));
+			writel_relaxed(pctrl->spi_cfg_regs_val[j],
+					pctrl->spi_base + j * 4);
 	}
 
 	/* Restore normal gpios */
@@ -2150,6 +2132,7 @@ int msm_pinctrl_probe(struct platform_device *pdev,
 	key = "spi_cfg";
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, key);
 	if (res) {
+		pctrl->spi_base = devm_ioremap_resource(&pdev->dev, res);
 		pctrl->spi_cfg_regs = res->start;
 		pctrl->spi_cfg_end = res->end;
 	}

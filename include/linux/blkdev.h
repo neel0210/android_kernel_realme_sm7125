@@ -57,7 +57,7 @@ struct keyslot_manager;
  */
 #define BLKCG_MAX_POLS		3
 
-static inline int blk_validate_block_size(unsigned int bsize)
+static inline int blk_validate_block_size(unsigned long bsize)
 {
 	if (bsize < 512 || bsize > PAGE_SIZE || !is_power_of_2(bsize))
 		return -EINVAL;
@@ -704,13 +704,16 @@ struct request_queue {
 #define QUEUE_FLAG_REGISTERED  26	/* queue has been registered to a disk */
 #define QUEUE_FLAG_SCSI_PASSTHROUGH 27	/* queue supports SCSI commands */
 #define QUEUE_FLAG_QUIESCED    28	/* queue has been quiesced */
-#define QUEUE_FLAG_INLINECRYPT 29      /* inline encryption support */
+#define QUEUE_FLAG_PREEMPT_ONLY 29	/* only process REQ_PREEMPT requests */
+#define QUEUE_FLAG_INLINECRYPT 30      /* inline encryption support */
 
-#define QUEUE_FLAG_DEFAULT	((1 << QUEUE_FLAG_STACKABLE)	|	\
+#define QUEUE_FLAG_DEFAULT	((1 << QUEUE_FLAG_IO_STAT) |		\
+				 (1 << QUEUE_FLAG_STACKABLE)	|	\
 				 (1 << QUEUE_FLAG_SAME_COMP)	|	\
-				 (0 << QUEUE_FLAG_ADD_RANDOM))
+				 (1 << QUEUE_FLAG_ADD_RANDOM))
 
-#define QUEUE_FLAG_MQ_DEFAULT	((1 << QUEUE_FLAG_STACKABLE)	|	\
+#define QUEUE_FLAG_MQ_DEFAULT	((1 << QUEUE_FLAG_IO_STAT) |		\
+				 (1 << QUEUE_FLAG_STACKABLE)	|	\
 				 (1 << QUEUE_FLAG_SAME_COMP)	|	\
 				 (1 << QUEUE_FLAG_POLL))
 
@@ -782,6 +785,30 @@ static inline void queue_flag_clear(unsigned int flag, struct request_queue *q)
 	__clear_bit(flag, &q->queue_flags);
 }
 
+#ifdef OPLUS_FEATURE_HEALTHINFO
+// jiheng.xie@PSW.Tech.BSP.Performance, 2019/03/11
+// Add for ioqueue
+#ifdef CONFIG_OPPO_HEALTHINFO
+static inline void ohm_ioqueue_add_inflight(struct request_queue *q,
+					     struct request *rq)
+{
+	if (rq->cmd_flags & REQ_FG)
+		q->in_flight[BLK_RW_FG]++;
+	else
+		q->in_flight[BLK_RW_BG]++;
+}
+
+static inline void ohm_ioqueue_dec_inflight(struct request_queue *q,
+					     struct request *rq)
+{
+	if (rq->cmd_flags & REQ_FG)
+		q->in_flight[BLK_RW_FG]--;
+	else
+		q->in_flight[BLK_RW_BG]--;
+}
+#endif
+#endif /* OPLUS_FEATURE_HEALTHINFO */
+
 #define blk_queue_tagged(q)	test_bit(QUEUE_FLAG_QUEUED, &(q)->queue_flags)
 #define blk_queue_stopped(q)	test_bit(QUEUE_FLAG_STOPPED, &(q)->queue_flags)
 #define blk_queue_dying(q)	test_bit(QUEUE_FLAG_DYING, &(q)->queue_flags)
@@ -807,6 +834,10 @@ static inline void queue_flag_clear(unsigned int flag, struct request_queue *q)
 	((rq)->cmd_flags & (REQ_FAILFAST_DEV|REQ_FAILFAST_TRANSPORT| \
 			     REQ_FAILFAST_DRIVER))
 #define blk_queue_quiesced(q)	test_bit(QUEUE_FLAG_QUIESCED, &(q)->queue_flags)
+#define blk_queue_preempt_only(q)				\
+	test_bit(QUEUE_FLAG_PREEMPT_ONLY, &(q)->queue_flags)
+
+extern void blk_set_preempt_only(struct request_queue *q, bool preempt_only);
 
 static inline bool blk_account_rq(struct request *rq)
 {
@@ -1035,7 +1066,7 @@ extern int scsi_cmd_ioctl(struct request_queue *, struct gendisk *, fmode_t,
 extern int sg_scsi_ioctl(struct request_queue *, struct gendisk *, fmode_t,
 			 struct scsi_ioctl_command __user *);
 
-extern int blk_queue_enter(struct request_queue *q, bool nowait);
+extern int blk_queue_enter(struct request_queue *q, unsigned int op);
 extern void blk_queue_exit(struct request_queue *q);
 extern void blk_start_queue(struct request_queue *q);
 extern void blk_start_queue_async(struct request_queue *q);
@@ -1421,6 +1452,7 @@ static inline struct request *blk_map_queue_find_tag(struct blk_queue_tag *bqt,
 }
 
 extern int blkdev_issue_flush(struct block_device *, gfp_t, sector_t *);
+extern void blkdev_issue_flush_nowait(struct block_device *, gfp_t);
 extern int blkdev_issue_write_same(struct block_device *bdev, sector_t sector,
 		sector_t nr_sects, gfp_t gfp_mask, struct page *page);
 
@@ -1812,33 +1844,42 @@ int kblockd_schedule_delayed_work_on(int cpu, struct delayed_work *dwork, unsign
 int kblockd_mod_delayed_work_on(int cpu, struct delayed_work *dwork, unsigned long delay);
 
 #ifdef CONFIG_BLK_CGROUP
+/*
+ * This should not be using sched_clock(). A real patch is in progress
+ * to fix this up, until that is in place we need to disable preemption
+ * around sched_clock() in this function and set_io_start_time_ns().
+ */
 static inline void set_start_time_ns(struct request *req)
 {
-	req->start_time_ns = ktime_get_ns();
+	preempt_disable();
+	req->start_time_ns = sched_clock();
+	preempt_enable();
 }
 
 static inline void set_io_start_time_ns(struct request *req)
 {
-	req->io_start_time_ns = ktime_get_ns();
+	preempt_disable();
+	req->io_start_time_ns = sched_clock();
+	preempt_enable();
 }
 
-static inline u64 rq_start_time_ns(struct request *req)
+static inline uint64_t rq_start_time_ns(struct request *req)
 {
         return req->start_time_ns;
 }
 
-static inline u64 rq_io_start_time_ns(struct request *req)
+static inline uint64_t rq_io_start_time_ns(struct request *req)
 {
         return req->io_start_time_ns;
 }
 #else
 static inline void set_start_time_ns(struct request *req) {}
 static inline void set_io_start_time_ns(struct request *req) {}
-static inline u64 rq_start_time_ns(struct request *req)
+static inline uint64_t rq_start_time_ns(struct request *req)
 {
 	return 0;
 }
-static inline u64 rq_io_start_time_ns(struct request *req)
+static inline uint64_t rq_io_start_time_ns(struct request *req)
 {
 	return 0;
 }
@@ -2022,11 +2063,10 @@ struct block_device_operations {
 	int (*compat_ioctl) (struct block_device *, fmode_t, unsigned, unsigned long);
 	unsigned int (*check_events) (struct gendisk *disk,
 				      unsigned int clearing);
-	/* ->media_changed() is DEPRECATED, use ->check_events() instead */
-	int (*media_changed) (struct gendisk *);
 	void (*unlock_native_capacity) (struct gendisk *);
 	int (*revalidate_disk) (struct gendisk *);
 	int (*getgeo)(struct block_device *, struct hd_geometry *);
+	int (*set_read_only)(struct block_device *bdev, bool ro);
 	/* this callback is with swap_lock and sometimes page table lock held */
 	void (*swap_slot_free_notify) (struct block_device *, unsigned long);
 	struct module *owner;
@@ -2164,6 +2204,10 @@ static inline int blkdev_issue_flush(struct block_device *bdev, gfp_t gfp_mask,
 				     sector_t *error_sector)
 {
 	return 0;
+}
+
+static inline void blkdev_issue_flush_nowait(struct block_device *bdev, gfp_t gfp_mask)
+{
 }
 
 #endif /* CONFIG_BLOCK */

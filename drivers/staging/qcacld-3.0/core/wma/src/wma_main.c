@@ -6312,11 +6312,13 @@ static void wma_print_populate_soc_caps(struct target_psoc_info *tgt_hdl)
 	WMA_LOGD("%s: <====== HW mode cap printing starts ======>", __func__);
 	/* print cap of each hw mode */
 	for (i = 0; i < total_mac_phy_cnt; i++) {
-	  WMA_LOGD("====>: hw mode id[%d], phy id[%d]",
-		   mac_phy_cap[i].hw_mode_id,
-		   mac_phy_cap[i].phy_id);
-	  tmp = &mac_phy_cap[i];
-	  wma_print_mac_phy_capabilities(tmp, i);
+		if (&mac_phy_cap[i]) {
+			WMA_LOGD("====>: hw mode id[%d], phy id[%d]",
+				 mac_phy_cap[i].hw_mode_id,
+				 mac_phy_cap[i].phy_id);
+			tmp = &mac_phy_cap[i];
+			wma_print_mac_phy_capabilities(tmp, i);
+		}
 	}
 	WMA_LOGD("%s: <====== HW mode cap printing ends ======>\n", __func__);
 }
@@ -6776,7 +6778,8 @@ int wma_rx_service_ready_ext_event(void *handle, uint8_t *event,
 	 * indicate 3 vdevs and firmware shall add 1 vdev for NAN. So decrement
 	 * the num_vdevs by 1.
 	 */
-	if (ucfg_nan_is_vdev_creation_allowed(wma_handle->psoc)) {
+	if (ucfg_nan_is_vdev_creation_allowed(wma_handle->psoc) ||
+	    QDF_GLOBAL_FTM_MODE == cds_get_conparam()) {
 		wlan_res_cfg->nan_separate_iface_support = true;
 	} else {
 		wlan_res_cfg->num_vdevs--;

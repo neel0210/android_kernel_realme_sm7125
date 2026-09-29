@@ -703,7 +703,7 @@ int hibernate(void)
 		goto Unlock;
 	}
 
-	pr_debug("hibernation entry\n");
+	pr_info("hibernation entry\n");
 	pm_prepare_console();
 	error = __pm_notifier_call_chain(PM_HIBERNATION_PREPARE, -1, &nr_calls);
 	if (error) {
@@ -711,9 +711,9 @@ int hibernate(void)
 		goto Exit;
 	}
 
-	pr_debug("Syncing filesystems ... \n");
+	pr_info("Syncing filesystems ... \n");
 	sys_sync();
-	pr_debug("done.\n");
+	pr_info("done.\n");
 
 	error = freeze_processes();
 	if (error)

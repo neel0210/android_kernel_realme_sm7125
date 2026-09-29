@@ -195,11 +195,12 @@ do_build() {
     echo -e "  └─────────────────────────────────────┘${nocol}"
     echo ""
 
-    make -C "$SRC" "$KERNEL_DEFCONFIG" O=out ARCH=arm64 CC=clang
+    make -C "$SRC" "$KERNEL_DEFCONFIG" O=out ARCH=arm64 CC=clang LD=ld.lld
 
     if ! make -C "$SRC" -j"$JOBS" O=out \
             ARCH=arm64 \
             CC=clang \
+            LD=ld.lld \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             AR=llvm-ar NM=llvm-nm \
@@ -213,7 +214,7 @@ do_build() {
 # ── Verify ────────────────────────────────────────────────────────
 verify_build() {
     local boot="${SRC}/out/arch/arm64/boot"
-    for img in Image.gz dtb.img; do
+    for img in Image.gz Image.gz-dtb; do
         [[ -f "${boot}/${img}" ]] || die "${img} not found — build failed"
     done
     ok "All boot images verified"
@@ -227,8 +228,11 @@ do_package() {
         git clone --depth=1 https://github.com/neel0210/AnyKernel3.git -b SATORU "$ANYKERNEL3_DIR"
     fi
 
-    cp "${SRC}/out/arch/arm64/boot/Image.gz"  "$ANYKERNEL3_DIR/"
-    cp "${SRC}/out/arch/arm64/boot/dtb.img"    "$ANYKERNEL3_DIR/"
+    cp "${SRC}/out/arch/arm64/boot/Image.gz"      "$ANYKERNEL3_DIR/"
+    cp "${SRC}/out/arch/arm64/boot/Image.gz-dtb"  "$ANYKERNEL3_DIR/"
+    if [[ -f "${SRC}/out/arch/arm64/boot/dtb.img" ]]; then
+        cp "${SRC}/out/arch/arm64/boot/dtb.img"   "$ANYKERNEL3_DIR/"
+    fi
     rm -f "$ANYKERNEL3_DIR/dtbo.img"
 
     local prefix="Arise-Again"

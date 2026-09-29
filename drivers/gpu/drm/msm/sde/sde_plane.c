@@ -3889,7 +3889,6 @@ static int sde_plane_sspp_atomic_update(struct drm_plane *plane,
 	struct drm_crtc *crtc;
 	struct drm_framebuffer *fb;
 	struct sde_rect src, dst;
-	bool is_rt;
 	bool q16_data = true;
 	int idx;
 
@@ -4039,17 +4038,12 @@ static int sde_plane_sspp_atomic_update(struct drm_plane *plane,
 
 	_sde_plane_set_scanout(plane, pstate, &psde->pipe_cfg, fb);
 
-	is_rt = sde_crtc_get_client_type(crtc) != NRT_CLIENT;
-	if (is_rt != psde->is_rt_pipe) {
-		psde->is_rt_pipe = is_rt;
-		pstate->dirty |= SDE_PLANE_DIRTY_QOS;
-	}
-
 	/* early out if nothing dirty */
 	if (!pstate->dirty)
 		return 0;
 	pstate->pending = true;
 
+	psde->is_rt_pipe = (sde_crtc_get_client_type(crtc) != NRT_CLIENT);
 	_sde_plane_set_qos_ctrl(plane, false, SDE_PLANE_QOS_PANIC_CTRL);
 
 	/* update secure session flag */
@@ -4258,11 +4252,8 @@ static int sde_plane_sspp_atomic_update(struct drm_plane *plane,
 				&psde->sharp_cfg);
 	}
 
-	if (pstate->dirty & (SDE_PLANE_DIRTY_QOS | SDE_PLANE_DIRTY_RECTS |
-			     SDE_PLANE_DIRTY_FORMAT)) {
-		_sde_plane_set_qos_lut(plane, fb);
-		_sde_plane_set_danger_lut(plane, fb);
-	}
+	_sde_plane_set_qos_lut(plane, fb);
+	_sde_plane_set_danger_lut(plane, fb);
 
 	if (plane->type != DRM_PLANE_TYPE_CURSOR) {
 		_sde_plane_set_qos_ctrl(plane, true, SDE_PLANE_QOS_PANIC_CTRL);
@@ -4271,8 +4262,7 @@ static int sde_plane_sspp_atomic_update(struct drm_plane *plane,
 			_sde_plane_set_ts_prefill(plane, pstate);
 	}
 
-	if (pstate->dirty & SDE_PLANE_DIRTY_QOS)
-		_sde_plane_set_qos_remap(plane);
+	_sde_plane_set_qos_remap(plane);
 
 	/* clear dirty */
 	pstate->dirty = 0x0;
@@ -4397,6 +4387,7 @@ static void _sde_plane_install_properties(struct drm_plane *plane,
 	const struct sde_format_extended *format_list;
 	struct sde_kms_info *info;
 	struct sde_plane *psde = to_sde_plane(plane);
+	int zpos_max = 255;
 	int zpos_def = 0;
 	char feature_name[256];
 
@@ -4414,13 +4405,31 @@ static void _sde_plane_install_properties(struct drm_plane *plane,
 
 	psde->catalog = catalog;
 
-	if (!sde_is_custom_client() && plane->type != DRM_PLANE_TYPE_PRIMARY) {
+	if (sde_is_custom_client()) {
+		if (catalog->mixer_count &&
+				catalog->mixer[0].sblk->maxblendstages) {
+			zpos_max = catalog->mixer[0].sblk->maxblendstages - 1;
+
+			if (catalog->has_base_layer &&
+					(zpos_max > SDE_STAGE_MAX - 1))
+				zpos_max = SDE_STAGE_MAX - 1;
+			else if (zpos_max > SDE_STAGE_MAX - SDE_STAGE_0 - 1)
+				zpos_max = SDE_STAGE_MAX - SDE_STAGE_0 - 1;
+		}
+	} else if (plane->type != DRM_PLANE_TYPE_PRIMARY) {
 		/* reserve zpos == 0 for primary planes */
 		zpos_def = drm_plane_index(plane) + 1;
 	}
 
 	msm_property_install_range(&psde->property_info, "zpos",
-		0x0, 0, INT_MAX, zpos_def, PLANE_PROP_ZPOS);
+		0x0, 0, zpos_max, zpos_def, PLANE_PROP_ZPOS);
+#ifdef OPLUS_BUG_STABILITY
+/* Sachin Shukla@PSW.MM.Display.LCD.Feature,2018-11-21
+ * Support custom propertys
+*/
+	msm_property_install_range(&psde->property_info,"PLANE_CUST",
+		0x0, 0, INT_MAX, 0, PLANE_PROP_CUSTOM);
+#endif
 
 	msm_property_install_range(&psde->property_info, "alpha",
 		0x0, 0, 255, 255, PLANE_PROP_ALPHA);

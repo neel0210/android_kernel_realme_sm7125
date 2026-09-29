@@ -971,9 +971,6 @@ struct device {
 	bool			offline_disabled:1;
 	bool			offline:1;
 	bool			of_node_reused:1;
-
-	struct list_head	iommu_map_list;
-	struct mutex		iommu_map_lock;
 };
 
 static inline struct device *kobj_to_dev(struct kobject *kobj)
@@ -1490,6 +1487,9 @@ do {									\
 #define dev_WARN_ONCE(dev, condition, format, arg...) \
 	WARN_ONCE(condition, "%s %s: " format, \
 			dev_driver_string(dev), dev_name(dev), ## arg)
+
+extern __printf(3, 4)
+int dev_err_probe(const struct device *dev, int err, const char *fmt, ...);
 
 /* Create alias, so I can be autoloaded. */
 #define MODULE_ALIAS_CHARDEV(major,minor) \

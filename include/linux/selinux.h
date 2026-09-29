@@ -14,6 +14,8 @@
 #ifndef _LINUX_SELINUX_H
 #define _LINUX_SELINUX_H
 
+#include <linux/types.h>
+
 struct selinux_audit_rule;
 struct audit_context;
 struct kern_ipc_perm;

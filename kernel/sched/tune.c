@@ -13,7 +13,6 @@
 
 bool schedtune_initialized = false;
 extern struct reciprocal_value schedtune_spc_rdiv;
-extern int kp_active_mode(void);
 
 /* We hold schedtune boost in effect for at least this long */
 #define SCHEDTUNE_BOOST_HOLD_NS 50000000ULL
@@ -106,7 +105,7 @@ root_schedtune = {
  *    implementation especially for the computation of the per-CPU boost
  *    value
  */
-#define BOOSTGROUPS_COUNT 6
+#define BOOSTGROUPS_COUNT 8
 
 /* Array of configured boostgroups */
 static struct schedtune *allocated_group[BOOSTGROUPS_COUNT] = {
@@ -180,9 +179,18 @@ void restore_cgroup_boost_settings(void)
 
 bool task_sched_boost(struct task_struct *p)
 {
-	struct schedtune *st = task_schedtune(p);
+	struct schedtune *st;
+	bool enabled;
 
-	return st->sched_boost_enabled;
+	if (unlikely(!schedtune_initialized))
+		return false;
+
+	rcu_read_lock();
+	st = task_schedtune(p);
+	enabled = st->sched_boost_enabled;
+	rcu_read_unlock();
+
+	return enabled;
 }
 
 static u64
@@ -545,51 +553,11 @@ int schedtune_cpu_boost(int cpu)
 	return bg->boost_max;
 }
 
-static inline int schedtune_adj_ta(struct task_struct *p)
-{
-	struct schedtune *st;
-	char name_buf[NAME_MAX + 1];
-	int adj = p->signal->oom_score_adj;
-
-	/* We only care about adj == 0 */
-	if (adj != 0)
-		return 0;
-
-	/* Don't touch kthreads */
-	if (p->flags & PF_KTHREAD)
-		return 0;
-
-	st = task_schedtune(p);
-	cgroup_name(st->css.cgroup, name_buf, sizeof(name_buf));
-	if (!strncmp(name_buf, "top-app", strlen("top-app"))) {
-		pr_debug("top app is %s with adj %i\n", p->comm, adj);
-		return 1;
-	}
-
-	return 0;
-}
-
+#ifdef OPLUS_FEATURE_UIFIRST
+// XieLiujie@BSP.KERNEL.PERFORMANCE, 2020/05/25, Add for UIFirst
+extern bool test_task_ux(struct task_struct *task);
+#endif /* OPLUS_FEATURE_UIFIRST */
 int schedtune_task_boost(struct task_struct *p)
-{
-	struct schedtune *st;
-	int task_boost;
-
-	if (unlikely(!schedtune_initialized) || (kp_active_mode() == 1))
-		return 0;
-
-	/* Get task boost value */
-	rcu_read_lock();
-	st = task_schedtune(p);
-	task_boost = max(st->boost, schedtune_adj_ta(p));
-	rcu_read_unlock();
-
-	return task_boost;
-}
-
-/*  The same as schedtune_task_boost except assuming the caller has the rcu read
- *  lock.
- */
-int schedtune_task_boost_rcu_locked(struct task_struct *p)
 {
 	struct schedtune *st;
 	int task_boost;
@@ -598,8 +566,16 @@ int schedtune_task_boost_rcu_locked(struct task_struct *p)
 		return 0;
 
 	/* Get task boost value */
+	rcu_read_lock();
 	st = task_schedtune(p);
-	task_boost = max(st->boost, schedtune_adj_ta(p));
+	task_boost = st->boost;
+#ifdef OPLUS_FEATURE_UIFIRST
+// XieLiujie@BSP.KERNEL.PERFORMANCE, 2020/06/15, Add for UIFirst
+	if (sysctl_uifirst_enabled && sysctl_launcher_boost_enabled && p->static_ux == 2) {
+		task_boost = 60;
+	}
+#endif /* OPLUS_FEATURE_UIFIRST */
+	rcu_read_unlock();
 
 	return task_boost;
 }
@@ -609,13 +585,19 @@ int schedtune_prefer_idle(struct task_struct *p)
 	struct schedtune *st;
 	int prefer_idle;
 
-	if (unlikely(!schedtune_initialized) || (kp_active_mode() == 1))
+	if (unlikely(!schedtune_initialized))
 		return 0;
 
 	/* Get prefer_idle value */
 	rcu_read_lock();
 	st = task_schedtune(p);
 	prefer_idle = st->prefer_idle;
+#ifdef OPLUS_FEATURE_UIFIRST
+// XieLiujie@BSP.KERNEL.PERFORMANCE, 2020/05/25, Add for UIFirst
+	if (sysctl_uifirst_enabled && sysctl_launcher_boost_enabled && test_task_ux(p)) {
+		prefer_idle = 1;
+	}
+#endif /* OPLUS_FEATURE_UIFIRST */
 	rcu_read_unlock();
 
 	return prefer_idle;
@@ -625,9 +607,6 @@ static u64
 prefer_idle_read(struct cgroup_subsys_state *css, struct cftype *cft)
 {
 	struct schedtune *st = css_st(css);
-
-	if (kp_active_mode() == 1)
-		return 0;
 
 	return st->prefer_idle;
 }
@@ -646,9 +625,6 @@ static s64
 boost_read(struct cgroup_subsys_state *css, struct cftype *cft)
 {
 	struct schedtune *st = css_st(css);
-
-	if (kp_active_mode() == 1)
-		return 0;
 
 	return st->boost;
 }
@@ -685,7 +661,7 @@ boost_write(struct cgroup_subsys_state *css, struct cftype *cft,
 	if (boost < 0 || boost > 100)
 		return -EINVAL;
 
-	st->boost = (boost > 10) ? boost : 0;
+	st->boost = boost;
 
 	/* Update CPU boost */
 	schedtune_boostgroup_update(st->idx, st->boost);

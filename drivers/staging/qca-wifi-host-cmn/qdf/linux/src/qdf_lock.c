@@ -273,6 +273,7 @@ qdf_export_symbol(qdf_wake_lock_create);
  */
 QDF_STATUS qdf_wake_lock_acquire(qdf_wake_lock_t *lock, uint32_t reason)
 {
+
 	return QDF_STATUS_SUCCESS;
 }
 qdf_export_symbol(qdf_wake_lock_acquire);
@@ -734,6 +735,7 @@ void qdf_lock_stats_deinit(void)
 				  __func__, lock_cookies[i].u.cookie.func,
 				  lock_cookies[i].u.cookie.line);
 	}
+	lock_cookie_freelist = NULL;
 }
 
 /* allocated separate memory in case the lock memory is freed without

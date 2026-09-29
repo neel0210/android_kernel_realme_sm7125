@@ -322,6 +322,15 @@ config MMU_NOTIFIER
 	bool
 	select SRCU
 
+config OOM_SCORE_NOTIFIER
+	bool "OOM score notifier"
+	default n
+	help
+	  This creates a notifier for process oom_score_adj status.
+	  It create events for new, updated or freed tasks and
+	  are used to build a mirrored task list in
+	  lowmemorykiller.
+
 config KSM
 	bool "Enable KSM for page merging"
 	depends on MMU
@@ -796,28 +805,6 @@ config PERCPU_STATS
 	  information includes global and per chunk statistics, which can
 	  be used to help understand percpu memory usage.
 
-config ARCH_SUPPORTS_SPECULATIVE_PAGE_FAULT
-       def_bool n
-
-config SPECULATIVE_PAGE_FAULT
-       bool "Speculative page faults"
-       default y
-       depends on ARCH_SUPPORTS_SPECULATIVE_PAGE_FAULT
-       depends on MMU && SMP
-       help
-         Try to handle user space page faults without holding the mmap_sem.
-
-	 This should allow better concurrency for massively threaded process
-	 since the page fault handler will not wait for other threads memory
-	 layout change to be done, assuming that this change is done in another
-	 part of the process's memory space. This type of page fault is named
-	 speculative page fault.
-
-	 If the speculative page fault fails because of a concurrency is
-	 detected or because underlying PMD or PTE tables are not yet
-	 allocating, it is failing its processing and a classic page fault
-	 is then tried.
-
 config HAVE_LOW_MEMORY_KILLER
 	bool "Have user/kernel space low memory killer"
 	default n
@@ -852,6 +839,29 @@ config FORCE_ALLOC_FROM_DMA_ZONE
 
 	  If unsure, say "n".
 
+#ifdef OPLUS_FEATURE_MULTI_KSWAPD
+source "mm/multi_kswapd/Kconfig"
+#endif /*OPLUS_FEATURE_MULTI_KSWAPD*/
+
+#ifdef OPLUS_FEATURE_PROCESS_RECLAIM
+# inactive pages only
+config PROCESS_RECLAIM_ENHANCE
+	bool "Enable process reclaim enchance"
+	depends on PROCESS_RECLAIM
+	default y
+	help
+	 It allows to reclaim different type pages of the process by
+	 /proc/process_reclaim.
+
+	 (echo inactive_file > /proc/PID/reclaim) reclaims inactive file-backed
+		pages only.
+	 (echo inactive_anon > /proc/PID/reclaim) reclaims inactive anonymous
+		pages only.
+	 (echo inactive > /proc/PID/reclaim) reclaims inactive file-backed and
+		anonymous pages only.
+	 Any other vaule, please reference PROCESS_RECLAIM.
+#endif /* OPLUS_FEATURE_PROCESS_RECLAIM */
+
 #ifdef OPLUS_FEATURE_HEALTHINFO
 #/* Huacai.Zhou@PSW.BSP.Kernel.MM, 2018-07-07, add alloc wait monitor support*/
 source "mm/oppo_healthinfo/Kconfig"
@@ -865,11 +875,10 @@ config PHYSICAL_ANTI_FRAGMENTATION
 	 Turn on the function of Physical memory anti-fragmentation.
 #endif /* OPLUS_FEATURE_MULTI_FREEAREA */
 
-config OPLUS_MM_HACKS
-	bool "Enable oplus memory management hacks"
-	default n
+#ifdef OPLUS_FEATURE_VIRTUAL_RESERVE_MEMORY
+config VIRTUAL_RESERVE_MEMORY
+	bool "reserved vma for gpu emergency mmap"
+	default y
 	help
-	  Improves memory management drastically as these hacks are used in Oplus devices.
-	  Tested on devices made by OEMs like Motorola and Samsung.
-
-	  If unsure, say "n".
+	 support reserved vma for gpu emergency mmap.
+#endif /* OPLUS_FEATURE_VIRTUAL_RESERVE_MEMORY */

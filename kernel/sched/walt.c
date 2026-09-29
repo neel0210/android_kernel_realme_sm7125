@@ -30,6 +30,17 @@
 #include "walt.h"
 
 #include <trace/events/sched.h>
+#ifdef OPLUS_FEATURE_UIFIRST
+// XuHaifeng@BSP.KERNEL.PERFORMANCE, 2020/06/23, Add for UIFirst(sldie boost)
+#include <linux/uifirst/uifirst_sched_common.h>
+#endif
+#ifdef OPLUS_FEATURE_UIFIRST
+// XuHaifeng@BSP.KERNEL.PERFORMANCE, 2020/08/03, Add for UIFirst(slide boost)
+#include <linux/sched.h>
+extern u64 ux_task_load[];
+extern u64 ux_load_ts[];
+#define UX_LOAD_WINDOW 8000000
+#endif /* OPLUS_FEATURE_UIFIRST */
 const char *task_event_names[] = {"PUT_PREV_TASK", "PICK_NEXT_TASK",
 				  "TASK_WAKE", "TASK_MIGRATE", "TASK_UPDATE",
 				"IRQ_UPDATE"};
@@ -88,10 +99,16 @@ static void acquire_rq_locks_irqsave(const cpumask_t *cpus,
 				     unsigned long *flags)
 {
 	int cpu;
+	int level = 0;
 
 	local_irq_save(*flags);
-	for_each_cpu(cpu, cpus)
-		raw_spin_lock(&cpu_rq(cpu)->lock);
+	for_each_cpu(cpu, cpus) {
+		if (level == 0)
+			raw_spin_lock(&cpu_rq(cpu)->lock);
+		else
+			raw_spin_lock_nested(&cpu_rq(cpu)->lock, level);
+		level++;
+	}
 }
 
 static void release_rq_locks_irqrestore(const cpumask_t *cpus,
@@ -508,6 +525,12 @@ u64 freq_policy_load(struct rq *rq)
 	u64 aggr_grp_load = cluster->aggr_grp_load;
 	u64 load, tt_load = 0;
 	u64 coloc_boost_load = cluster->coloc_boost_load;
+#ifdef OPLUS_FEATURE_UIFIRST
+	// XuHaifeng@BSP.KERNEL.PERFORMANCE, 2020/08/18, Add for UIFirst(slide boost)
+	u64 wallclock = sched_ktime_clock();
+	u64 timeline = 0;
+	int cpu = cpu_of(rq);
+#endif /* OPLUS_FEATURE_UIFIRST */
 	if (rq->ed_task != NULL) {
 		load = sched_ravg_window;
 		goto done;
@@ -534,6 +557,15 @@ u64 freq_policy_load(struct rq *rq)
 	default:
 		break;
 	}
+#ifdef OPLUS_FEATURE_UIFIRST
+	// XuHaifeng@BSP.KERNEL.PERFORMANCE, 2020/08/18, Add for UIFirst(slide boost)
+	if (sysctl_uifirst_enabled && sysctl_slide_boost_enabled && ux_load_ts[cpu]) {
+		timeline = wallclock - ux_load_ts[cpu];
+		if  (timeline >= UX_LOAD_WINDOW)
+			ux_task_load[cpu] = 0;
+		load = max_t(u64, load, ux_task_load[cpu]);
+	}
+#endif /* OPLUS_FEATURE_UIFIRST */
 
 done:
 	trace_sched_load_to_gov(rq, aggr_grp_load, tt_load, sched_freq_aggr_en,
@@ -891,7 +923,7 @@ void fixup_busy_time(struct task_struct *p, int new_cpu)
 	if (!same_freq_domain(new_cpu, task_cpu(p))) {
 		src_rq->notif_pending = true;
 		dest_rq->notif_pending = true;
-		sched_irq_work_queue(&walt_migration_irq_work);
+		irq_work_queue(&walt_migration_irq_work);
 	}
 
 	if (is_ed_enabled()) {
@@ -945,6 +977,9 @@ void set_window_start(struct rq *rq)
 
 unsigned int max_possible_efficiency = 1;
 unsigned int min_possible_efficiency = UINT_MAX;
+
+unsigned int sysctl_sched_conservative_pl;
+unsigned int sysctl_sched_many_wakeup_threshold = 1000;
 
 #define INC_STEP 8
 #define DEC_STEP 2
@@ -1977,7 +2012,7 @@ static inline void run_walt_irq_work(u64 old_window_start, struct rq *rq)
 	result = atomic64_cmpxchg(&walt_irq_work_lastq_ws, old_window_start,
 				   rq->window_start);
 	if (result == old_window_start)
-		sched_irq_work_queue(&walt_cpufreq_irq_work);
+		irq_work_queue(&walt_cpufreq_irq_work);
 }
 
 /* Reflect task activity on its demand and cpu's busy time statistics */
@@ -2502,14 +2537,19 @@ core_initcall(register_walt_callback);
 
 int register_cpu_cycle_counter_cb(struct cpu_cycle_counter_cb *cb)
 {
+	unsigned long flags;
+
 	mutex_lock(&cluster_lock);
 	if (!cb->get_cpu_cycle_counter) {
 		mutex_unlock(&cluster_lock);
 		return -EINVAL;
 	}
 
+	acquire_rq_locks_irqsave(cpu_possible_mask, &flags);
 	cpu_cycle_counter_cb = *cb;
 	use_cycle_counter = true;
+	release_rq_locks_irqrestore(cpu_possible_mask, &flags);
+
 	mutex_unlock(&cluster_lock);
 
 	cpufreq_unregister_notifier(&notifier_trans_block,

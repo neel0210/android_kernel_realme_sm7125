@@ -57,6 +57,7 @@
 #define SCLK_HZ (32768)
 #define PSCI_POWER_STATE(reset) (reset << 30)
 #define PSCI_AFFINITY_LEVEL(lvl) ((lvl & 0x3) << 24)
+#define BIAS_HYST (bias_hyst * NSEC_PER_MSEC)
 
 static struct system_pm_ops *sys_pm_ops;
 
@@ -68,6 +69,8 @@ struct lpm_cluster *lpm_root_node;
 static bool lpm_prediction = true;
 module_param_named(lpm_prediction, lpm_prediction, bool, 0664);
 
+static uint32_t bias_hyst;
+module_param_named(bias_hyst, bias_hyst, uint, 0664);
 static bool lpm_ipi_prediction = true;
 module_param_named(lpm_ipi_prediction, lpm_ipi_prediction, bool, 0664);
 
@@ -115,7 +118,7 @@ module_param_named(sleep_disabled, sleep_disabled, bool, 0664);
  */
 s32 msm_cpuidle_get_deep_idle_latency(void)
 {
-	return 2;
+	return 10;
 }
 EXPORT_SYMBOL(msm_cpuidle_get_deep_idle_latency);
 
@@ -483,7 +486,7 @@ static uint64_t lpm_cpuidle_predict(struct cpuidle_device *dev,
 		history->hinvalid = 0;
 		history->htmr_wkup = 1;
 		history->stime = 0;
-		return 1;
+		return 0;
 	}
 
 	/*
@@ -600,25 +603,20 @@ static void clear_predict_history(void)
 
 static void update_history(struct cpuidle_device *dev, int idx);
 
-static inline bool lpm_disallowed(s64 sleep_us, int cpu, struct lpm_cpu *pm_cpu)
+static inline bool is_cpu_biased(int cpu, uint64_t *bias_time)
 {
-	uint64_t bias_time = 0;
+	u64 now = sched_clock();
+	u64 last = sched_get_cpu_last_busy_time(cpu);
+	u64 diff = 0;
 
-	if (cpu_isolated(cpu))
-		goto out;
+	if (!last)
+		return false;
 
-	if (sleep_disabled)
-		return true;
-
-	bias_time = sched_lpm_disallowed_time(cpu);
-	if (bias_time) {
-		pm_cpu->bias = bias_time;
+	diff = now - last;
+	if (diff < BIAS_HYST) {
+		*bias_time = BIAS_HYST - diff;
 		return true;
 	}
-
-out:
-	if (sleep_us < 0)
-		return true;
 
 	return false;
 }
@@ -640,15 +638,26 @@ static int cpu_power_select(struct cpuidle_device *dev,
 	uint32_t next_wakeup_us = (uint32_t)sleep_us;
 	uint32_t min_residency, max_residency;
 	struct power_params *pwr_params;
+	uint64_t bias_time = 0;
 
-	if (lpm_disallowed(sleep_us, dev->cpu, cpu))
-		goto done_select;
+	if ((sleep_disabled && !cpu_isolated(dev->cpu)) || sleep_us < 0)
+		return best_level;
 
 	idx_restrict = cpu->nlevels + 1;
+
 	next_event_us = (uint32_t)(ktime_to_us(get_next_event_time(dev->cpu)));
 
+	if (is_cpu_biased(dev->cpu, &bias_time) && (!cpu_isolated(dev->cpu))) {
+		cpu->bias = bias_time;
+		goto done_select;
+	}
+
 	for (i = 0; i < cpu->nlevels; i++) {
-		if (!lpm_cpu_mode_allow(dev->cpu, i, true))
+		bool allow;
+
+		allow = i ? lpm_cpu_mode_allow(dev->cpu, i, true) : true;
+
+		if (!allow)
 			continue;
 
 		pwr_params = &cpu->levels[i].pwr;
@@ -675,10 +684,9 @@ static int cpu_power_select(struct cpuidle_device *dev,
 			 * call prediction.
 			 */
 			if (next_wakeup_us > max_residency) {
-				predicted = (lpm_cpuidle_predict(dev, cpu,
-					&idx_restrict,
-					&idx_restrict_time, &ipi_predicted) == 1) ? 0 :
-						(max_residency >> 1);
+				predicted = lpm_cpuidle_predict(dev, cpu,
+					&idx_restrict, &idx_restrict_time,
+					&ipi_predicted);
 				if (predicted && (predicted < min_residency))
 					predicted = min_residency;
 			} else
@@ -1164,7 +1172,7 @@ static void cluster_prepare(struct lpm_cluster *cluster,
 	if (cluster_configure(cluster, i, from_idle, predicted))
 		goto failed;
 
-	if (!IS_ERR_OR_NULL(cluster->stats))
+	if (IS_ENABLED(CONFIG_MSM_IDLE_STATS))
 		cluster->stats->sleep_time = start_time;
 	cluster_prepare(cluster->parent, &cluster->num_children_in_sync, i,
 			from_idle, start_time);
@@ -1173,7 +1181,7 @@ static void cluster_prepare(struct lpm_cluster *cluster,
 	return;
 failed:
 	spin_unlock(&cluster->sync_lock);
-	if (!IS_ERR_OR_NULL(cluster->stats))
+	if (IS_ENABLED(CONFIG_MSM_IDLE_STATS))
 		cluster->stats->sleep_time = 0;
 }
 
@@ -1213,7 +1221,7 @@ static void cluster_unprepare(struct lpm_cluster *cluster,
 	if (!first_cpu || cluster->last_level == cluster->default_level)
 		goto unlock_return;
 
-	if (!IS_ERR_OR_NULL(cluster->stats) && cluster->stats->sleep_time)
+	if (IS_ENABLED(CONFIG_MSM_IDLE_STATS) && cluster->stats->sleep_time)
 		cluster->stats->sleep_time = end_time -
 			cluster->stats->sleep_time;
 	lpm_stats_cluster_exit(cluster->stats, cluster->last_level, success);
@@ -1426,9 +1434,7 @@ static int lpm_cpuidle_enter(struct cpuidle_device *dev,
 	if (need_resched())
 		goto exit;
 
-	cpuidle_set_idle_cpu(dev->cpu);
 	success = psci_enter_sleep(cpu, idx, true);
-	cpuidle_clear_idle_cpu(dev->cpu);
 
 exit:
 	end_time = ktime_to_ns(ktime_get());
@@ -1444,8 +1450,7 @@ exit:
 		clusttimer_cancel();
 	}
 	if (cpu->bias) {
-		if (!idx)
-			biastimer_cancel();
+		biastimer_cancel();
 		cpu->bias = 0;
 	}
 	local_irq_enable();

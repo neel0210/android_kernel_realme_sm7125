@@ -71,7 +71,6 @@ struct mqueue_inode_info {
 	wait_queue_head_t wait_q;
 
 	struct rb_root msg_tree;
-	struct rb_node *msg_tree_rightmost;
 	struct posix_msg_tree_node *node_cache;
 	struct mq_attr attr;
 
@@ -125,7 +124,6 @@ static int msg_insert(struct msg_msg *msg, struct mqueue_inode_info *info)
 {
 	struct rb_node **p, *parent = NULL;
 	struct posix_msg_tree_node *leaf;
-	bool rightmost = true;
 
 	p = &info->msg_tree.rb_node;
 	while (*p) {
@@ -134,10 +132,9 @@ static int msg_insert(struct msg_msg *msg, struct mqueue_inode_info *info)
 
 		if (likely(leaf->priority == msg->m_type))
 			goto insert_msg;
-		else if (msg->m_type < leaf->priority) {
+		else if (msg->m_type < leaf->priority)
 			p = &(*p)->rb_left;
-			rightmost = false;
-		} else
+		else
 			p = &(*p)->rb_right;
 	}
 	if (info->node_cache) {
@@ -150,10 +147,6 @@ static int msg_insert(struct msg_msg *msg, struct mqueue_inode_info *info)
 		INIT_LIST_HEAD(&leaf->msg_list);
 	}
 	leaf->priority = msg->m_type;
-
-	if (rightmost)
-		info->msg_tree_rightmost = &leaf->rb_node;
-
 	rb_link_node(&leaf->rb_node, parent, p);
 	rb_insert_color(&leaf->rb_node, &info->msg_tree);
 insert_msg:
@@ -163,35 +156,23 @@ insert_msg:
 	return 0;
 }
 
-static inline void msg_tree_erase(struct posix_msg_tree_node *leaf,
-				  struct mqueue_inode_info *info)
-{
-	struct rb_node *node = &leaf->rb_node;
-
-	if (info->msg_tree_rightmost == node)
-		info->msg_tree_rightmost = rb_prev(node);
-
-	rb_erase(node, &info->msg_tree);
-	if (info->node_cache) {
-		kfree(leaf);
-	} else {
-		info->node_cache = leaf;
-	}
-}
-
 static inline struct msg_msg *msg_get(struct mqueue_inode_info *info)
 {
-	struct rb_node *parent = NULL;
+	struct rb_node **p, *parent = NULL;
 	struct posix_msg_tree_node *leaf;
 	struct msg_msg *msg;
 
 try_again:
-	/*
-	 * During insert, low priorities go to the left and high to the
-	 * right.  On receive, we want the highest priorities first, so
-	 * walk all the way to the right.
-	 */
-	parent = info->msg_tree_rightmost;
+	p = &info->msg_tree.rb_node;
+	while (*p) {
+		parent = *p;
+		/*
+		 * During insert, low priorities go to the left and high to the
+		 * right.  On receive, we want the highest priorities first, so
+		 * walk all the way to the right.
+		 */
+		p = &(*p)->rb_right;
+	}
 	if (!parent) {
 		if (info->attr.mq_curmsgs) {
 			pr_warn_once("Inconsistency in POSIX message queue, "
@@ -206,14 +187,24 @@ try_again:
 		pr_warn_once("Inconsistency in POSIX message queue, "
 			     "empty leaf node but we haven't implemented "
 			     "lazy leaf delete!\n");
-		msg_tree_erase(leaf, info);
+		rb_erase(&leaf->rb_node, &info->msg_tree);
+		if (info->node_cache) {
+			kfree(leaf);
+		} else {
+			info->node_cache = leaf;
+		}
 		goto try_again;
 	} else {
 		msg = list_first_entry(&leaf->msg_list,
 				       struct msg_msg, m_list);
 		list_del(&msg->m_list);
 		if (list_empty(&leaf->msg_list)) {
-			msg_tree_erase(leaf, info);
+			rb_erase(&leaf->rb_node, &info->msg_tree);
+			if (info->node_cache) {
+				kfree(leaf);
+			} else {
+				info->node_cache = leaf;
+			}
 		}
 	}
 	info->attr.mq_curmsgs--;
@@ -256,7 +247,6 @@ static struct inode *mqueue_get_inode(struct super_block *sb,
 		info->qsize = 0;
 		info->user = NULL;	/* set when all is ok */
 		info->msg_tree = RB_ROOT;
-		info->msg_tree_rightmost = NULL;
 		info->node_cache = NULL;
 		memset(&info->attr, 0, sizeof(info->attr));
 		info->attr.mq_maxmsg = min(ipc_ns->mq_msg_max,

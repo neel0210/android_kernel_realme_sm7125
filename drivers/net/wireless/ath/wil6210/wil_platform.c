@@ -18,7 +18,6 @@
 #include "wil_platform.h"
 #include "msm_11ad.h"
 
-#if IS_ENABLED(CONFIG_MSM_11AD)
 int __init wil_platform_modinit(void)
 {
 	return msm_11ad_modinit();
@@ -51,19 +50,3 @@ void *wil_platform_init(struct device *dev, struct wil_platform_ops *ops,
 
 	return handle;
 }
-#else
-int __init wil_platform_modinit(void)
-{
-	return 0;
-}
-
-void wil_platform_modexit(void)
-{
-}
-
-void *wil_platform_init(struct device *dev, struct wil_platform_ops *ops,
-			const struct wil_platform_rops *rops, void *wil_handle)
-{
-	return NULL;
-}
-#endif

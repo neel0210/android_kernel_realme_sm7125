@@ -29,6 +29,11 @@
  * GNU General Public License for more details.
  *
  */
+/*
+ * NOTE: This file has been modified by Sony Mobile Communications Inc.
+ * Modifications are Copyright (c) 2018 Sony Mobile Communications Inc,
+ * and licensed under the license of the file.
+ */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
@@ -55,6 +60,16 @@
 #include <trace/events/almk.h>
 #include <linux/show_mem_notifier.h>
 
+#ifdef OPLUS_FEATURE_LOWMEM_DBG
+/*yixue.ge@PSW.BSP.Kernel.Driver 20170808 modify for get some data about performance */
+#include <linux/proc_fs.h>
+#include <linux/module.h>
+#endif /*OPLUS_FEATURE_LOWMEM_DBG*/
+
+#ifdef LMK_TNG_ENABLE_TRACE
+#include <trace/events/lmk.h>
+#endif
+
 #ifdef CONFIG_HIGHMEM
 #define _ZONE ZONE_HIGHMEM
 #else
@@ -64,12 +79,29 @@
 #define CREATE_TRACE_POINTS
 #include "trace/lowmemorykiller.h"
 
+#ifdef OPLUS_FEATURE_LOWMEM_DBG
+#include <linux/module.h>
+
+static struct kobject *lmk_module_kobj = NULL;
+static struct work_struct lowmemorykiller_work;
+static char *lmklowmem[2] = { "LMK=LOWMEM", NULL };
+static int uevent_threshold[6] = {0, 0, 0, 0, }; // 1: 58, 2: 117, 3: 176
+static int last_selected_adj = 0;
+static void lowmemorykiller_uevent(short adj, int index);
+static void lowmemorykiller_work_func(struct work_struct *work);
+#endif /* OPLUS_FEATURE_LOWMEM_DBG */
+
 /* to enable lowmemorykiller */
 static int enable_lmk = 1;
 module_param_named(enable_lmk, enable_lmk, int, 0644);
 
-static u32 lowmem_debug_level = 0;
-static short lowmem_adj[6] = {
+#include "lowmemorykiller_stats.h"
+#ifdef CONFIG_ANDROID_LOW_MEMORY_KILLER_TNG
+#include "lowmemorykiller_tng.h"
+#endif
+
+u32 lowmem_debug_level = 1;
+short lowmem_adj[6] = {
 	0,
 	1,
 	6,
@@ -77,12 +109,18 @@ static short lowmem_adj[6] = {
 };
 
 static int lowmem_adj_size = 4;
-static int lowmem_minfree[6] = {
+int lowmem_minfree[6] = {
 	3 * 512,	/* 6MB */
 	2 * 1024,	/* 8MB */
 	4 * 1024,	/* 16MB */
 	16 * 1024,	/* 64MB */
 };
+#ifdef OPLUS_FEATURE_LOWMEM_DBG
+/*huacai.zhou@PSW.BSP.Kernel.MM 2018-01-15 modify for lowmemkill count */
+static bool lmk_cnt_enable = true;
+static unsigned long adaptive_lowmem_kill_count = 0;
+static unsigned long tatal_lowmem_kill_count = 0;
+#endif /*OPLUS_FEATURE_LOWMEM_DBG*/
 
 static int lowmem_minfree_size = 4;
 static int lmk_fast_run = 1;
@@ -93,6 +131,16 @@ static unsigned long lowmem_deathpending_timeout;
 static unsigned int almk_totalram_ratio = 6;
 module_param_named(almk_totalram_ratio, almk_totalram_ratio, uint, 0644);
 #endif
+int lowmem_min_param_size(void)
+{
+	int array_size = ARRAY_SIZE(lowmem_adj);
+
+	if (lowmem_adj_size < array_size)
+		array_size = lowmem_adj_size;
+	if (lowmem_minfree_size < array_size)
+		array_size = lowmem_minfree_size;
+	return array_size;
+}
 
 #define lowmem_print(level, x...)			\
 	do {						\
@@ -105,7 +153,7 @@ static unsigned long lowmem_count(struct shrinker *s,
 {
 	if (!enable_lmk)
 		return 0;
-
+	lmk_inc_stats(LMK_COUNT);
 	return global_node_page_state(NR_ACTIVE_ANON) +
 		global_node_page_state(NR_ACTIVE_FILE) +
 		global_node_page_state(NR_INACTIVE_ANON) +
@@ -138,7 +186,7 @@ static int vmpressure_file_min;
 module_param_named(vmpressure_file_min, vmpressure_file_min, int, 0644);
 
 /* User knob to enable/disable oom reaping feature */
-static int oom_reaper = 1;
+int oom_reaper = 1;
 module_param_named(oom_reaper, oom_reaper, int, 0644);
 
 /* Variable that helps in feed to the reclaim path  */
@@ -152,6 +200,10 @@ bool lmk_kill_possible(void)
 {
 	unsigned long val = atomic64_read(&lmk_feed);
 
+	/* Userspace LMKD may have disabled this driver's shrinker. */
+	if (!READ_ONCE(enable_lmk))
+		return false;
+
 	return !val || time_after_eq(jiffies, val);
 }
 
@@ -161,7 +213,7 @@ enum {
 	VMPRESSURE_ADJUST_NORMAL,
 };
 
-static int adjust_minadj(short *min_score_adj)
+int adjust_minadj(short *min_score_adj)
 {
 	int ret = VMPRESSURE_NO_ADJUST;
 
@@ -175,6 +227,12 @@ static int adjust_minadj(short *min_score_adj)
 		else
 			ret = VMPRESSURE_ADJUST_NORMAL;
 		*min_score_adj = adj_max_shift;
+#ifdef OPLUS_FEATURE_LOWMEM_DBG
+/*huacai.zhou@PSW.BSP.Kernel.MM 2018-01-15 modify for adaptive lowmemkill count */
+/*Maybe it can not select task to kill, it's just a rough number */
+		if (lmk_cnt_enable)
+			adaptive_lowmem_kill_count++;
+#endif /*OPLUS_FEATURE_LOWMEM_DBG*/
 	}
 	atomic_set(&shift_adj, 0);
 
@@ -188,8 +246,12 @@ static int lmk_vmpressure_notifier(struct notifier_block *nb,
 	unsigned long pressure = action;
 	int array_size = ARRAY_SIZE(lowmem_adj);
 
-	if (enable_adaptive_lmk != ADAPTIVE_LMK_ENABLED)
+	if (enable_adaptive_lmk != ADAPTIVE_LMK_ENABLED) {
+#ifdef CONFIG_ANDROID_LOW_MEMORY_KILLER_TNG
+		balance_cache(pressure);
+#endif
 		return 0;
+	}
 
 	if (pressure >= 95) {
 		other_file = global_node_page_state(NR_FILE_PAGES) -
@@ -236,7 +298,9 @@ static int lmk_vmpressure_notifier(struct notifier_block *nb,
 		trace_almk_vmpressure(pressure, other_free, other_file);
 		atomic_set(&shift_adj, 0);
 	}
-
+#ifdef CONFIG_ANDROID_LOW_MEMORY_KILLER_TNG
+	balance_cache(pressure);
+#endif
 	return 0;
 }
 
@@ -463,7 +527,60 @@ static int get_minfree_scalefactor(gfp_t gfp_mask)
 	return max_t(int, 1, mult_frac(100, nr_usable, totalram_pages));
 }
 
-static void mark_lmk_victim(struct task_struct *tsk)
+#ifdef OPLUS_FEATURE_LOWMEM_DBG
+/*yixue.ge@PSW.BSP.Kernel.Driver 20170808 modify for get some data about performance */
+static ssize_t lowmem_kill_count_proc_read(struct file *file, char __user *buf,
+		size_t count,loff_t *off)
+{
+	char page[256] = {0};
+	int len = 0;
+
+	if (!lmk_cnt_enable)
+		return 0;
+
+	len = sprintf(&page[len],"adaptive_lowmem_kill_count:%lu\ntotal_lowmem_kill_count:%lu\n",
+				adaptive_lowmem_kill_count, tatal_lowmem_kill_count);
+
+	if(len > *off)
+	   len -= *off;
+	else
+	   len = 0;
+
+	if(copy_to_user(buf,page,(len < count ? len : count))){
+	   return -EFAULT;
+	}
+	*off += len < count ? len : count;
+	return (len < count ? len : count);
+
+}
+
+struct file_operations lowmem_kill_count_proc_fops = {
+	.read = lowmem_kill_count_proc_read,
+};
+
+static int __init setup_lowmem_killinfo(void)
+{
+
+	proc_create("lowmemkillcounts", S_IRUGO, NULL, &lowmem_kill_count_proc_fops);
+	return 0;
+}
+module_init(setup_lowmem_killinfo);
+
+//Jiemin.Zhu@PSW.AD.Performance.Memory.1139862, 2015/06/17, Modify for 8939/16 5.1 for orphan task
+static void orphan_foreground_task_kill(struct task_struct *task, short adj, short min_score_adj)
+{
+		if (min_score_adj == 0)
+		    return;
+
+		if (task->parent->pid == 1 && adj == 0) {
+			lowmem_print(1, "kill orphan foreground task %s, pid %d, adj %hd, min_score_adj %hd\n",
+				task->comm, task->pid, adj, min_score_adj);
+			send_sig(SIGKILL, task, 0);
+		}
+}
+#endif /* OPLUS_FEATURE_LOWMEM_DBG */
+
+void mark_lmk_victim(struct task_struct *tsk)
 {
 	struct mm_struct *mm = tsk->mm;
 
@@ -490,6 +607,14 @@ static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 	int other_free;
 	int other_file;
 	bool lock_required = true;
+	lmk_inc_stats(LMK_SCAN);
+#ifdef CONFIG_HSWAP
+	int reclaimed_cnt = 0, reclaimable_cnt = 0, shrink_task_cnt = 0;
+	int hswap_tasksize = 0;
+	int swapsize = 0, selected_swapsize = 0;
+	struct task_struct *hswap_kill_selected = NULL;
+	int kill_reason = KILL_LMK;
+#endif
 
 	other_free = global_zone_page_state(NR_FREE_PAGES) - totalreserve_pages;
 
@@ -507,8 +632,13 @@ static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 	    (other_file <= lowmem_minfree[0] >> 1))
 		lock_required = false;
 
-	if (likely(lock_required) && !mutex_trylock(&scan_mutex))
+	if (likely(lock_required) && !mutex_trylock(&scan_mutex)) {
+#ifdef LMK_TNG_ENABLE_TRACE
+		trace_lmk_remain_scan(0, sc->nr_to_scan, sc->gfp_mask);
+#endif
+		lmk_inc_stats(LMK_BUSY);
 		return 0;
+        }
 
 	tune_lmk_param(&other_free, &other_file, sc);
 
@@ -535,6 +665,10 @@ static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 		trace_almk_shrink(0, ret, other_free, other_file, 0);
 		lowmem_print(5, "%s %lu, %x, return 0\n",
 			     __func__, sc->nr_to_scan, sc->gfp_mask);
+#ifdef LMK_TNG_ENABLE_TRACE
+		trace_lmk_remain_scan(0, sc->nr_to_scan, sc->gfp_mask);
+#endif
+		lmk_inc_stats(LMK_NO_KILL);
 		if (lock_required)
 			mutex_unlock(&scan_mutex);
 		return 0;
@@ -554,6 +688,10 @@ static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 		if (test_task_flag(tsk, TIF_MM_RELEASED))
 			continue;
 
+		/* Ignore task if coredump in progress */
+		if (tsk->mm && tsk->mm->core_state)
+			continue;
+
 		if (oom_reaper) {
 			p = find_lock_task_mm(tsk);
 			if (!p)
@@ -569,6 +707,11 @@ static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 					rcu_read_unlock();
 					if (lock_required)
 						mutex_unlock(&scan_mutex);
+#ifdef LMK_TNG_ENABLE_TRACE
+					trace_lmk_remain_scan(0, sc->nr_to_scan,
+							      sc->gfp_mask);
+#endif
+					lmk_inc_stats(LMK_TIMEOUT);
 					return 0;
 				}
 			}
@@ -579,6 +722,11 @@ static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 					rcu_read_unlock();
 					if (lock_required)
 						mutex_unlock(&scan_mutex);
+#ifdef LMK_TNG_ENABLE_TRACE
+					trace_lmk_remain_scan(0, sc->nr_to_scan,
+							      sc->gfp_mask);
+#endif
+					lmk_inc_stats(LMK_TIMEOUT);
 					return 0;
 				}
 
@@ -587,9 +735,32 @@ static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 				continue;
 		}
 
+#ifdef OPLUS_FEATURE_LOWMEM_DBG
+//Jiemin.Zhu@PSW.AD.Performance.Memory.1139862, 2016/01/06, Add for D status process issue
+		if (p->state & TASK_UNINTERRUPTIBLE) {
+			task_unlock(p);
+			continue;
+		}
+		//resolve kill coredump process, it may continue long time
+		if (p->signal != NULL && (p->signal->flags & SIGNAL_GROUP_COREDUMP)) {
+			task_unlock(p);
+			continue;
+		}
+#endif /* OPLUS_FEATURE_LOWMEM_DBG */
+
 		oom_score_adj = p->signal->oom_score_adj;
 		if (oom_score_adj < min_score_adj) {
+#ifdef OPLUS_FEATURE_LOWMEM_DBG
+//Jiemin.Zhu@PSW.AD.Performance.Memory.1139862, 2015/06/17, Modify for 8939/16 5.1 for orphan task
+			tasksize = get_mm_rss(p->mm);
+#endif /* OPLUS_FEATURE_LOWMEM_DBG */
 			task_unlock(p);
+#ifdef OPLUS_FEATURE_LOWMEM_DBG
+//Jiemin.Zhu@PSW.AD.Performance.Memory.1139862, 2015/06/17, Modify for 8939/16 5.1 for orphan task
+			if (tasksize > 0) {
+				orphan_foreground_task_kill(p, oom_score_adj, min_score_adj);
+			}
+#endif /* OPLUS_FEATURE_LOWMEM_DBG */
 			continue;
 		}
 		tasksize = get_mm_rss(p->mm);
@@ -623,6 +794,10 @@ static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 			rcu_read_unlock();
 			if (lock_required)
 				mutex_unlock(&scan_mutex);
+#ifdef LMK_TNG_ENABLE_TRACE
+			trace_lmk_remain_scan(0, sc->nr_to_scan, sc->gfp_mask);
+#endif
+			lmk_inc_stats(LMK_BUSY);
 			return 0;
 		}
 
@@ -638,6 +813,11 @@ static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 		}
 		task_unlock(selected);
 		trace_lowmemory_kill(selected, cache_size, cache_limit, free);
+#ifdef OPLUS_FEATURE_LOWMEM_DBG
+/*yixue.ge@PSW.BSP.Kernel.Driver 20170808 modify for get some data about performance */
+		if (lmk_cnt_enable)
+			tatal_lowmem_kill_count++;
+#endif /* OPLUS_FEATURE_LOWMEM_DBG */
 		lowmem_print(1, "Killing '%s' (%d) (tgid %d), adj %hd,\n"
 			"to free %ldkB on behalf of '%s' (%d) because\n"
 			"cache %ldkB is below limit %ldkB for oom score %hd\n"
@@ -663,21 +843,83 @@ static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 			(long)(PAGE_SIZE / 1024),
 			sc->gfp_mask);
 
+#ifdef OPLUS_FEATURE_LOWMEM_DBG
+/*huacai.zhou@PSW.BSP.Kernel.MM. 2018/01/15, modify for show more meminfo*/
+			show_mem(SHOW_MEM_FILTER_NODES, NULL);
+#endif /*OPLUS_FEATURE_LOWMEM_DBG*/
+
+#ifdef OPLUS_FEATURE_LOWMEM_DBG
+/*Zhenjian.Jiang@PSW.BSP.Kernel.MM. 2019/03/19, modify for show more meminfo when adj <= 300*/
+		if (selected_oom_score_adj <= 300) {
+#else
 		if (lowmem_debug_level >= 2 && selected_oom_score_adj == 0) {
+#endif /*OPLUS_FEATURE_LOWMEM_DBG*/
+#ifndef OPLUS_FEATURE_LOWMEM_DBG
+/*huacai.zhou@PSW.BSP.Kernel.MM. 2018/01/15, modify for show more meminfo*/
+			show_mem(SHOW_MEM_FILTER_NODES, NULL);
+#endif /*OPLUS_FEATURE_LOWMEM_DBG*/
 			show_mem_call_notifiers();
 			dump_tasks(NULL, NULL);
 		}
 
+#ifdef OPLUS_FEATURE_LOWMEM_DBG
+//Jiemin.Zhu@PSW.AD.Performance.Memory.1139862, 2016/05/31, Add for lowmemorykiller uevent
+		if (selected_oom_score_adj == 0) {
+			lowmem_print(1, "Killing %s, adj is %hd, so send uevent to userspace\n",
+					selected->comm, selected_oom_score_adj);
+			schedule_work(&lowmemorykiller_work);
+		} else {
+			for (i = 1; i < 3; i++) {
+				if (selected_oom_score_adj == lowmem_adj[i]) {
+					//uevent must be continuous adj record
+					if (last_selected_adj != selected_oom_score_adj) {
+						last_selected_adj = selected_oom_score_adj;
+						uevent_threshold[i] = 0;
+						break;
+					}
+					uevent_threshold[i]++;
+					if (uevent_threshold[i] == i * 5) {
+						dump_tasks(NULL, NULL);
+						lowmemorykiller_uevent(selected_oom_score_adj, i);
+						uevent_threshold[i] = 0;
+					}
+					break;
+				}
+			}
+		}
+
+//Jiemin.Zhu@PSW.AD.Performance.Memory.1139862, 2017/12/27, Add for print more memory logs in aging test version
+		if (min_score_adj == 0) {
+			lowmem_print(1, "min_score_adj is 0, so send uevent to userspace\n");
+			dump_tasks(NULL, NULL);
+			schedule_work(&lowmemorykiller_work);
+		}
+#endif /* OPLUS_FEATURE_LOWMEM_DBG */
+
 		lowmem_deathpending_timeout = jiffies + HZ;
 		rem += selected_tasksize;
+#ifdef LMK_TNG_ENABLE_TRACE
+		trace_lmk_sigkill(selected->pid, selected->comm,
+				  selected_oom_score_adj, selected_tasksize,
+				  sc->gfp_mask);
+#endif
+#ifdef CONFIG_HSWAP
+		if (kill_reason == KILL_MEMORY_PRESSURE)
+			rem = SHRINK_STOP;
+
+		lowmem_print(3, "reclaimed cnt = %d, reclaim cont = %d, min oom score= %hd\n",
+				reclaimed_cnt, reclaimable_cnt, min_score_adj);
+#endif
 		rcu_read_unlock();
 		/* give the system time to free up the memory */
 		msleep_interruptible(20);
 		trace_almk_shrink(selected_tasksize, ret,
 				  other_free, other_file,
 				  selected_oom_score_adj);
+		lmk_inc_stats(LMK_KILL);
 	} else {
 		trace_almk_shrink(1, ret, other_free, other_file, 0);
+		lmk_inc_stats(LMK_WASTE);
 		rcu_read_unlock();
 		if (other_free < lowmem_minfree[0] &&
 		    other_file < lowmem_minfree[0])
@@ -691,6 +933,9 @@ static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 		     __func__, sc->nr_to_scan, sc->gfp_mask, rem);
 	if (lock_required)
 		mutex_unlock(&scan_mutex);
+#ifdef LMK_TNG_ENABLE_TRACE
+	trace_lmk_remain_scan(rem, sc->nr_to_scan, sc->gfp_mask);
+#endif
 	return rem;
 }
 
@@ -712,6 +957,21 @@ static int lmk_hotplug_callback(struct notifier_block *self,
 	return NOTIFY_OK;
 }
 
+#ifdef OPLUS_FEATURE_LOWMEM_DBG
+//Jiemin.Zhu@PSW.AD.Performance.Memory.1139862, 2016/05/31, Add for lowmemorykiller uevent
+static void lowmemorykiller_work_func(struct work_struct *work)
+{
+	kobject_uevent_env(lmk_module_kobj, KOBJ_CHANGE, lmklowmem);
+	lowmem_print(1, "lowmemorykiller send uevent: %s\n", lmklowmem[0]);
+}
+
+static void lowmemorykiller_uevent(short adj, int index)
+{
+	lowmem_print(1, "kill adj %hd more than %d times and so send uevent to userspace\n", adj, index * 5);
+	schedule_work(&lowmemorykiller_work);
+}
+#endif /* OPLUS_FEATURE_LOWMEM_DBG */
+
 static struct shrinker lowmem_shrinker = {
 	.scan_objects = lowmem_scan,
 	.count_objects = lowmem_count,
@@ -725,10 +985,31 @@ static struct notifier_block lmk_memory_callback_nb = {
 
 static int __init lowmem_init(void)
 {
+#ifdef CONFIG_ANDROID_LOW_MEMORY_KILLER_TNG
+	lowmem_init_tng(&lowmem_shrinker);
+#endif
+#ifdef CONFIG_HSWAP
+	struct task_struct *reclaim_tsk;
+	struct task_struct *reset_top_time_tsk;
+	int i = 0;
+
+	reclaim_tsk = kthread_run(reclaim_task_thread, NULL, "reclaim_task");
+	reset_top_time_tsk = kthread_run(reset_task_time_thread, NULL, "reset_task");
+
+	for (; i < TIME_ARR_SIZE; i++)
+		arr_ts[i] = -1;
+#endif
 	register_shrinker(&lowmem_shrinker);
 	vmpressure_notifier_register(&lmk_vmpr_nb);
 	if (register_hotmemory_notifier(&lmk_memory_callback_nb))
 		lowmem_print(1, "Registering memory hotplug notifier failed\n");
+#ifdef OPLUS_FEATURE_LOWMEM_DBG
+//Jiemin.Zhu@PSW.AD.Performance.Memory.1139862, 2016/05/31, Add for lowmemorykiller uevent
+	lmk_module_kobj = kset_find_obj(module_kset, KBUILD_MODNAME);
+	lowmem_print(1, "kernel obj name %s\n", lmk_module_kobj->name);
+	INIT_WORK(&lowmemorykiller_work, lowmemorykiller_work_func);
+#endif /* OPLUS_FEATURE_LOWMEM_DBG */
+	init_procfs_lmk();
 	return 0;
 }
 device_initcall(lowmem_init);
@@ -827,3 +1108,7 @@ module_param_array_named(minfree, lowmem_minfree, uint, &lowmem_minfree_size,
 			 S_IRUGO | S_IWUSR);
 module_param_named(debug_level, lowmem_debug_level, uint, S_IRUGO | S_IWUSR);
 module_param_named(lmk_fast_run, lmk_fast_run, int, S_IRUGO | S_IWUSR);
+#ifdef OPLUS_FEATURE_LOWMEM_DBG
+/*huacai.zhou@PSW.BSP.Kernel.MM 2018-01-15 modify for lowmemkill count */
+module_param_named(lmk_cnt_enable, lmk_cnt_enable, bool, S_IRUGO | S_IWUSR);
+#endif /*OPLUS_FEATURE_LOWMEM_DBG*/

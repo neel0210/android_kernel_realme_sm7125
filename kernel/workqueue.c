@@ -292,7 +292,7 @@ module_param_named(disable_numa, wq_disable_numa, bool, 0444);
 
 /* see the comment above the definition of WQ_POWER_EFFICIENT */
 static bool wq_power_efficient = IS_ENABLED(CONFIG_WQ_POWER_EFFICIENT_DEFAULT);
-module_param_named(power_efficient, wq_power_efficient, bool, 0644);
+module_param_named(power_efficient, wq_power_efficient, bool, 0444);
 
 static bool wq_online;			/* can kworkers be created yet? */
 
@@ -503,6 +503,11 @@ static inline void debug_work_deactivate(struct work_struct *work)
 
 void __init_work(struct work_struct *work, int onstack)
 {
+#ifdef OPLUS_FEATURE_UIFIRST
+// caichen@TECH.Kernel.Sched, 2020/05/01, add for uifirst wq
+	work->ux_work = 0;
+#endif
+
 	if (onstack)
 		debug_object_init_on_stack(work, &work_debug_descr);
 	else
@@ -1331,7 +1336,17 @@ static void insert_work(struct pool_workqueue *pwq, struct work_struct *work,
 
 	/* we own @work, set data and link */
 	set_work_pwq(work, pwq, extra_flags);
+#ifdef OPLUS_FEATURE_UIFIRST
+// caichen@TECH.Kernel.Sched, 2020/05/01, add for ui first wq
+	if(is_uxwork(work)){
+		list_add(&work->entry, head);
+	}else{
+		list_add_tail(&work->entry, head);
+	}
+#else
 	list_add_tail(&work->entry, head);
+#endif
+
 	get_pwq(pwq);
 
 	/*
@@ -1640,40 +1655,6 @@ bool mod_delayed_work_on(int cpu, struct workqueue_struct *wq,
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mod_delayed_work_on);
-
-static void rcu_work_rcufn(struct rcu_head *rcu)
-{
-	struct rcu_work *rwork = container_of(rcu, struct rcu_work, rcu);
-
-	/* read the comment in __queue_work() */
-	local_irq_disable();
-	__queue_work(WORK_CPU_UNBOUND, rwork->wq, &rwork->work);
-	local_irq_enable();
-}
-
-/**
- * queue_rcu_work - queue work after a RCU grace period
- * @wq: workqueue to use
- * @rwork: work to queue
- *
- * Return: %false if @rwork was already pending, %true otherwise.  Note
- * that a full RCU grace period is guaranteed only after a %true return.
- * While @rwork is guarnateed to be executed after a %false return, the
- * execution may happen before a full RCU grace period has passed.
- */
-bool queue_rcu_work(struct workqueue_struct *wq, struct rcu_work *rwork)
-{
-	struct work_struct *work = &rwork->work;
-
-	if (!test_and_set_bit(WORK_STRUCT_PENDING_BIT, work_data_bits(work))) {
-		rwork->wq = wq;
-		call_rcu(&rwork->rcu, rcu_work_rcufn);
-		return true;
-	}
-
-	return false;
-}
-EXPORT_SYMBOL(queue_rcu_work);
 
 /**
  * worker_enter_idle - enter idle state
@@ -2089,6 +2070,10 @@ __acquires(&pool->lock)
 	bool cpu_intensive = pwq->wq->flags & WQ_CPU_INTENSIVE;
 	int work_color;
 	struct worker *collision;
+#ifdef OPLUS_FEATURE_UIFIRST
+// caichen@TECH.Kernel.Sched, 2020/05/01, add for ui first wq
+	bool is_uxworker = false;
+#endif
 
 #ifdef CONFIG_LOCKDEP
 	/*
@@ -2180,9 +2165,21 @@ __acquires(&pool->lock)
 	 * flush_work() and complete() primitives (except for single-threaded
 	 * workqueues), so hiding them isn't a problem.
 	 */
+#ifdef OPLUS_FEATURE_UIFIRST
+// caichen@TECH.Kernel.Sched, 2020/05/01, add for ui  first wq
+	if(is_uxwork(work)){
+		set_ux_worker_task(worker->task);
+		is_uxworker = true;
+	}
+#endif
 	lockdep_invariant_state(true);
 	trace_workqueue_execute_start(work);
 	worker->current_func(work);
+#ifdef OPLUS_FEATURE_UIFIRST
+// caichen@TECH.Kernel.Sched, 2020/05/01, add for ui first wq
+	if(sysctl_uifirst_enabled && is_uxworker)
+		reset_ux_worker_task(worker->task);
+#endif
 
 	/*
 	 * While we must be careful to not use "work" after this, the trace
@@ -3096,26 +3093,6 @@ bool flush_delayed_work(struct delayed_work *dwork)
 }
 EXPORT_SYMBOL(flush_delayed_work);
 
-/**
- * flush_rcu_work - wait for a rwork to finish executing the last queueing
- * @rwork: the rcu work to flush
- *
- * Return:
- * %true if flush_rcu_work() waited for the work to finish execution,
- * %false if it was already idle.
- */
-bool flush_rcu_work(struct rcu_work *rwork)
-{
-	if (test_bit(WORK_STRUCT_PENDING_BIT, work_data_bits(&rwork->work))) {
-		rcu_barrier();
-		flush_work(&rwork->work);
-		return true;
-	} else {
-		return flush_work(&rwork->work);
-	}
-}
-EXPORT_SYMBOL(flush_rcu_work);
-
 static bool __cancel_work(struct work_struct *work, bool is_dwork)
 {
 	unsigned long flags;
@@ -3440,7 +3417,7 @@ static void put_unbound_pool(struct worker_pool *pool)
 	del_timer_sync(&pool->mayday_timer);
 
 	/* sched-RCU protected to allow dereferences from get_work_pool() */
-	call_rcu(&pool->rcu, rcu_free_pool);
+	call_rcu_sched(&pool->rcu, rcu_free_pool);
 }
 
 /**
@@ -3553,14 +3530,14 @@ static void pwq_unbound_release_workfn(struct work_struct *work)
 	put_unbound_pool(pool);
 	mutex_unlock(&wq_pool_mutex);
 
-	call_rcu(&pwq->rcu, rcu_free_pwq);
+	call_rcu_sched(&pwq->rcu, rcu_free_pwq);
 
 	/*
 	 * If we're the last pwq going away, @wq is already dead and no one
 	 * is gonna access it anymore.  Schedule RCU free.
 	 */
 	if (is_last)
-		call_rcu(&wq->rcu, rcu_free_wq);
+		call_rcu_sched(&wq->rcu, rcu_free_wq);
 }
 
 /**
@@ -4267,7 +4244,7 @@ void destroy_workqueue(struct workqueue_struct *wq)
 		 * The base ref is never dropped on per-cpu pwqs.  Directly
 		 * schedule RCU free.
 		 */
-		call_rcu(&wq->rcu, rcu_free_wq);
+		call_rcu_sched(&wq->rcu, rcu_free_wq);
 	} else {
 		/*
 		 * We're the sole accessor of @wq at this point.  Directly
@@ -4450,6 +4427,7 @@ void set_worker_desc(const char *fmt, ...)
 		worker->desc_valid = true;
 	}
 }
+EXPORT_SYMBOL_GPL(set_worker_desc);
 
 /**
  * print_worker_info - print out worker information and description
@@ -5143,10 +5121,6 @@ int workqueue_set_unbound_cpumask(cpumask_var_t cpumask)
 	if (!zalloc_cpumask_var(&saved_cpumask, GFP_KERNEL))
 		return -ENOMEM;
 
-	/*
-	 * Not excluding isolated cpus on purpose.
-	 * If the user wishes to include them, we allow that.
-	 */
 	cpumask_and(cpumask, cpumask, cpu_possible_mask);
 	if (!cpumask_empty(cpumask)) {
 		apply_wqattrs_lock();
@@ -5753,7 +5727,7 @@ int __init workqueue_init_early(void)
 	WARN_ON(__alignof__(struct pool_workqueue) < __alignof__(long long));
 
 	BUG_ON(!alloc_cpumask_var(&wq_unbound_cpumask, GFP_KERNEL));
-	cpumask_andnot(wq_unbound_cpumask, cpu_lp_mask, cpu_isolated_map);
+	cpumask_copy(wq_unbound_cpumask, cpu_possible_mask);
 
 	pwq_cache = KMEM_CACHE(pool_workqueue, SLAB_PANIC);
 

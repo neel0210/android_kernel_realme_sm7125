@@ -1,4 +1,5 @@
 /* Copyright (c) 2011-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -24,6 +25,13 @@
 #include <soc/qcom/scm.h>
 #include <soc/qcom/secure_buffer.h>
 #include <linux/compat.h>
+#if defined(OPLUS_FEATURE_VIRTUAL_RESERVE_MEMORY) && defined(CONFIG_VIRTUAL_RESERVE_MEMORY)
+/*
+ * record the gpu highest addr
+ */
+#include <linux/resmap_account.h>
+#endif
+
 #include "kgsl.h"
 #include "kgsl_device.h"
 #include "kgsl_mmu.h"
@@ -110,7 +118,6 @@ static int secure_global_size;
 static int global_pt_count;
 static struct kgsl_memdesc gpu_qdss_desc;
 static struct kgsl_memdesc gpu_qtimer_desc;
-static unsigned int context_bank_number;
 
 void kgsl_print_global_pt_entries(struct seq_file *s)
 {
@@ -225,9 +232,8 @@ static void kgsl_iommu_remove_global(struct kgsl_mmu *mmu,
 static void kgsl_iommu_add_global(struct kgsl_mmu *mmu,
 		struct kgsl_memdesc *memdesc, const char *name)
 {
-	u32 bit;
+	u32 bit, start = 0;
 	u64 size = kgsl_memdesc_footprint(memdesc);
-	int start = 0;
 
 	if (memdesc->gpuaddr != 0)
 		return;
@@ -776,23 +782,21 @@ static bool kgsl_iommu_suppress_pagefault(uint64_t faultaddr, int write,
 	return kgsl_iommu_uche_overfetch(private, faultaddr);
 }
 
-static struct kgsl_process_private *kgsl_iommu_get_process(u64 ptbase)
+static struct kgsl_process_private *kgsl_iommu_identify_process(u64 ptbase)
 {
 	struct kgsl_process_private *p = NULL;
 	struct kgsl_iommu_pt *iommu_pt;
 
-	spin_lock(&kgsl_driver.proclist_lock);
+	mutex_lock(&kgsl_driver.process_mutex);
 	list_for_each_entry(p, &kgsl_driver.process_list, list) {
 		iommu_pt = p->pagetable->priv;
 		if (iommu_pt->ttbr0 == ptbase) {
-			if (!kgsl_process_private_get(p))
-				p = NULL;
-			spin_unlock(&kgsl_driver.proclist_lock);
+			mutex_unlock(&kgsl_driver.process_mutex);
 			return p;
 		}
 	}
 
-	spin_unlock(&kgsl_driver.proclist_lock);
+	mutex_unlock(&kgsl_driver.process_mutex);
 	return p;
 }
 
@@ -841,14 +845,15 @@ static int kgsl_iommu_fault_handler(struct iommu_domain *domain,
 		fault_type = "transaction stalled";
 
 	ptbase = KGSL_IOMMU_GET_CTX_REG_Q(ctx, TTBR0);
-	private = kgsl_iommu_get_process(ptbase);
+	private = kgsl_iommu_identify_process(ptbase);
 
-	if (private)
+	if (!kgsl_process_private_get(private))
+		private = NULL;
+	else
 		pid = pid_nr(private->pid);
 
 	if (kgsl_iommu_suppress_pagefault(addr, write, private)) {
 		iommu->pagefault_suppression_count++;
-		kgsl_process_private_put(private);
 		return ret;
 	}
 
@@ -1108,6 +1113,14 @@ static void setup_64bit_pagetable(struct kgsl_mmu *mmu,
 		pt->compat_va_end = mmu->secure_base;
 		pt->va_start = KGSL_IOMMU_VA_BASE64;
 		pt->va_end = KGSL_IOMMU_VA_END64;
+
+#if defined(OPLUS_FEATURE_VIRTUAL_RESERVE_MEMORY) && defined(CONFIG_VIRTUAL_RESERVE_MEMORY)
+		/*
+		 * record the high limit of gpu mmap_base, used for create
+		 * reserved area
+		 */
+		gpu_compat_high_limit_addr = pt->compat_va_end;
+#endif
 	}
 
 	if (pagetable->name != KGSL_MMU_GLOBAL_PT &&
@@ -1231,20 +1244,6 @@ void _enable_gpuhtw_llc(struct kgsl_mmu *mmu, struct kgsl_iommu_pt *iommu_pt)
 		"System cache not enabled for GPU pagetable walks: %d\n", ret);
 }
 
-int kgsl_program_smmu_aperture(void)
-{
-	struct scm_desc desc = {0};
-
-	desc.args[0] = 0xFFFF0000 | ((CP_APERTURE_REG & 0xff) << 8) |
-			(context_bank_number & 0xff);
-	desc.args[1] = 0xFFFFFFFF;
-	desc.args[2] = 0xFFFFFFFF;
-	desc.args[3] = 0xFFFFFFFF;
-	desc.arginfo = SCM_ARGS(4);
-
-	return scm_call2(SCM_SIP_FNID(SCM_SVC_MP, CP_SMMU_APERTURE_ID), &desc);
-}
-
 static int _init_global_pt(struct kgsl_mmu *mmu, struct kgsl_pagetable *pt)
 {
 	int ret = 0;
@@ -1284,10 +1283,22 @@ static int _init_global_pt(struct kgsl_mmu *mmu, struct kgsl_pagetable *pt)
 				ret);
 		goto done;
 	}
-	context_bank_number = cb_num;
+
 	if (!MMU_FEATURE(mmu, KGSL_MMU_GLOBAL_PAGETABLE) &&
 		scm_is_call_available(SCM_SVC_MP, CP_SMMU_APERTURE_ID)) {
-		ret = kgsl_program_smmu_aperture();
+		struct scm_desc desc = {0};
+
+		desc.args[0] = 0xFFFF0000 | ((CP_APERTURE_REG & 0xff) << 8) |
+			(cb_num & 0xff);
+
+		desc.args[1] = 0xFFFFFFFF;
+		desc.args[2] = 0xFFFFFFFF;
+		desc.args[3] = 0xFFFFFFFF;
+		desc.arginfo = SCM_ARGS(4);
+
+		ret = scm_call2(SCM_SIP_FNID(SCM_SVC_MP, CP_SMMU_APERTURE_ID),
+			&desc);
+
 		if (ret) {
 			pr_err("SMMU aperture programming call failed with error %d\n",
 									ret);
@@ -1845,8 +1856,7 @@ static int _iommu_map_guard_page(struct kgsl_pagetable *pt,
 		physaddr = page_to_phys(kgsl_guard_page);
 	}
 
-	if (!MMU_FEATURE(pt->mmu, KGSL_MMU_PAD_VA))
-		protflags &= ~IOMMU_WRITE;
+	protflags &= ~IOMMU_WRITE;
 
 	return _iommu_map_single_page_sync_pc(pt, gpuaddr, physaddr,
 			pad_size >> PAGE_SHIFT, protflags);
@@ -1945,9 +1955,7 @@ static int kgsl_iommu_sparse_dummy_map(struct kgsl_pagetable *pt,
 			return -ENOMEM;
 	}
 
-	map_flags = MMU_FEATURE(pt->mmu, KGSL_MMU_PAD_VA) ?
-				_get_protection_flags(pt, memdesc) :
-				IOMMU_READ | IOMMU_NOEXEC;
+	map_flags = IOMMU_READ | IOMMU_NOEXEC;
 
 	pages = kcalloc(count, sizeof(struct page *), GFP_KERNEL);
 	if (pages == NULL)
@@ -2507,14 +2515,18 @@ static uint64_t kgsl_iommu_find_svm_region(struct kgsl_pagetable *pagetable,
 static bool iommu_addr_in_svm_ranges(struct kgsl_iommu_pt *pt,
 	u64 gpuaddr, u64 size)
 {
+	u64 end = gpuaddr + size;
+
+	/* Make sure size is not zero and we don't wrap around */
+	if (end <= gpuaddr)
+		return false;
+
 	if ((gpuaddr >= pt->compat_va_start && gpuaddr < pt->compat_va_end) &&
-		((gpuaddr + size) > pt->compat_va_start &&
-			(gpuaddr + size) <= pt->compat_va_end))
+		(end > pt->compat_va_start && end <= pt->compat_va_end))
 		return true;
 
 	if ((gpuaddr >= pt->svm_start && gpuaddr < pt->svm_end) &&
-		((gpuaddr + size) > pt->svm_start &&
-			(gpuaddr + size) <= pt->svm_end))
+		(end > pt->svm_start && end <= pt->svm_end))
 		return true;
 
 	return false;
@@ -2574,8 +2586,7 @@ static int kgsl_iommu_get_gpuaddr(struct kgsl_pagetable *pagetable,
 
 	size = kgsl_memdesc_footprint(memdesc);
 
-	align = max_t(uint64_t, 1 << kgsl_memdesc_get_align(memdesc),
-			memdesc->pad_to);
+	align = kgsl_get_align(memdesc);
 
 	if (memdesc->flags & KGSL_MEMFLAGS_FORCE_32BIT) {
 		start = pt->compat_va_start;
@@ -2644,20 +2655,21 @@ static int kgsl_iommu_svm_range(struct kgsl_pagetable *pagetable,
 }
 
 static bool kgsl_iommu_addr_in_range(struct kgsl_pagetable *pagetable,
-		uint64_t gpuaddr)
+		uint64_t gpuaddr, uint64_t size)
 {
 	struct kgsl_iommu_pt *pt = pagetable->priv;
 
 	if (gpuaddr == 0)
 		return false;
 
-	if (gpuaddr >= pt->va_start && gpuaddr < pt->va_end)
+	if (gpuaddr >= pt->va_start && (gpuaddr + size) < pt->va_end)
 		return true;
 
-	if (gpuaddr >= pt->compat_va_start && gpuaddr < pt->compat_va_end)
+	if (gpuaddr >= pt->compat_va_start &&
+		       (gpuaddr + size) < pt->compat_va_end)
 		return true;
 
-	if (gpuaddr >= pt->svm_start && gpuaddr < pt->svm_end)
+	if (gpuaddr >= pt->svm_start && (gpuaddr + size) < pt->svm_end)
 		return true;
 
 	return false;

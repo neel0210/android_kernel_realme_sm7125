@@ -14,8 +14,13 @@
 
 extern int isolate_lru_page(struct page *page);
 extern void putback_lru_page(struct page *page);
+#if defined(OPLUS_FEATURE_PROCESS_RECLAIM) && defined(CONFIG_PROCESS_RECLAIM_ENHANCE)
+extern unsigned long reclaim_pages_from_list(struct list_head *page_list,
+			struct vm_area_struct *vma, struct mm_walk *walk);
+#else
 extern unsigned long reclaim_pages_from_list(struct list_head *page_list,
 					struct vm_area_struct *vma);
+#endif
 
 /*
  * The anon_vma heads a list of private "related" vmas, to scan if
@@ -183,16 +188,8 @@ void page_add_anon_rmap(struct page *, struct vm_area_struct *,
 		unsigned long, bool);
 void do_page_add_anon_rmap(struct page *, struct vm_area_struct *,
 			   unsigned long, int);
-void __page_add_new_anon_rmap(struct page *page, struct vm_area_struct *vma,
-			      unsigned long address, bool compound);
-static inline void page_add_new_anon_rmap(struct page *page,
-					  struct vm_area_struct *vma,
-					  unsigned long address, bool compound)
-{
-	VM_BUG_ON_VMA(address < vma->vm_start || address >= vma->vm_end, vma);
-	__page_add_new_anon_rmap(page, vma, address, compound);
-}
-
+void page_add_new_anon_rmap(struct page *, struct vm_area_struct *,
+		unsigned long, bool);
 void page_add_file_rmap(struct page *, bool);
 void page_remove_rmap(struct page *, bool);
 

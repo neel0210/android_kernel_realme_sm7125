@@ -1,4 +1,5 @@
 /* Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2023-2024, Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -1562,8 +1563,6 @@ static int npu_set_fw_state(struct npu_client *client, uint32_t enable)
 	int rc = 0;
 
 	if (host_ctx->network_num > 0) {
-		pr_err("Need to unload network first\n");
-		mutex_unlock(&npu_dev->dev_lock);
 		return -EINVAL;
 	}
 
@@ -1992,10 +1991,10 @@ static int npu_irq_init(struct npu_device *npu_dev)
 			npu_dev->irq[i].irq);
 		irq_set_status_flags(npu_dev->irq[i].irq,
 						IRQ_NOAUTOEN);
-		ret = devm_request_threaded_irq(&npu_dev->pdev->dev,
+		ret = devm_request_irq(&npu_dev->pdev->dev,
 				npu_dev->irq[i].irq, npu_intr_hdler,
-				npu_intr_thrd_hdler, irq_type,
-				npu_dev->irq[i].name, npu_dev);
+				irq_type, npu_dev->irq[i].name,
+				npu_dev);
 		if (ret) {
 			pr_err("devm_request_irq(%s:%d) failed\n",
 				npu_dev->irq[i].name,

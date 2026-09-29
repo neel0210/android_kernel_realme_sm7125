@@ -28,7 +28,7 @@
 
 void task_mem(struct seq_file *m, struct mm_struct *mm)
 {
-	unsigned long text, lib, swap, ptes, pmds, anon, file, shmem;
+	unsigned long text, lib, swap, anon, file, shmem;
 	unsigned long hiwater_vm, total_vm, hiwater_rss, total_rss;
 
 	anon = get_mm_counter(mm, MM_ANONPAGES);
@@ -52,8 +52,6 @@ void task_mem(struct seq_file *m, struct mm_struct *mm)
 	text = (PAGE_ALIGN(mm->end_code) - (mm->start_code & PAGE_MASK)) >> 10;
 	lib = (mm->exec_vm << (PAGE_SHIFT-10)) - text;
 	swap = get_mm_counter(mm, MM_SWAPENTS);
-	ptes = PTRS_PER_PTE * sizeof(pte_t) * atomic_long_read(&mm->nr_ptes);
-	pmds = PTRS_PER_PMD * sizeof(pmd_t) * mm_nr_pmds(mm);
 	seq_printf(m,
 		"VmPeak:\t%8lu kB\n"
 		"VmSize:\t%8lu kB\n"
@@ -69,7 +67,6 @@ void task_mem(struct seq_file *m, struct mm_struct *mm)
 		"VmExe:\t%8lu kB\n"
 		"VmLib:\t%8lu kB\n"
 		"VmPTE:\t%8lu kB\n"
-		"VmPMD:\t%8lu kB\n"
 		"VmSwap:\t%8lu kB\n",
 		hiwater_vm << (PAGE_SHIFT-10),
 		total_vm << (PAGE_SHIFT-10),
@@ -82,8 +79,7 @@ void task_mem(struct seq_file *m, struct mm_struct *mm)
 		shmem << (PAGE_SHIFT-10),
 		mm->data_vm << (PAGE_SHIFT-10),
 		mm->stack_vm << (PAGE_SHIFT-10), text, lib,
-		ptes >> 10,
-		pmds >> 10,
+		mm_pgtables_bytes(mm) >> 10,
 		swap << (PAGE_SHIFT-10));
 	hugetlb_report_usage(m, mm);
 }
@@ -189,9 +185,6 @@ static void vma_stop(struct proc_maps_private *priv)
 	release_task_mempolicy(priv);
 	up_read(&mm->mmap_sem);
 	mmput(mm);
-
-	sched_migrate_to_cpumask_end(to_cpumask(&priv->old_cpus_allowed),
-				     cpu_lp_mask);
 }
 
 static struct vm_area_struct *
@@ -227,9 +220,6 @@ static void *m_start(struct seq_file *m, loff_t *ppos)
 	mm = priv->mm;
 	if (!mm || !mmget_not_zero(mm))
 		return NULL;
-
-	sched_migrate_to_cpumask_start(to_cpumask(&priv->old_cpus_allowed),
-				       cpu_lp_mask);
 
 	down_read(&mm->mmap_sem);
 	hold_task_mempolicy(priv);
@@ -758,6 +748,9 @@ static void show_smap_vma_flags(struct seq_file *m, struct vm_area_struct *vma)
 		[ilog2(VM_PKEY_BIT2)]	= "",
 		[ilog2(VM_PKEY_BIT3)]	= "",
 #endif
+#ifdef CONFIG_HAVE_ARCH_USERFAULTFD_MINOR
+		[ilog2(VM_UFFD_MINOR)]	= "ui",
+#endif /* CONFIG_HAVE_ARCH_USERFAULTFD_MINOR */
 	};
 	size_t i;
 
@@ -821,7 +814,7 @@ static int show_smap(struct seq_file *m, void *v, int is_pid)
 	};
 	int ret = 0;
 	bool rollup_mode;
-	bool last_vma = false;
+	bool last_vma;
 
 	if (priv->rollup) {
 		rollup_mode = true;
@@ -1037,6 +1030,10 @@ const struct file_operations proc_tid_smaps_operations = {
 	.llseek		= seq_lseek,
 	.release	= proc_map_release,
 };
+
+#if defined(OPLUS_FEATURE_VIRTUAL_RESERVE_MEMORY) && defined(CONFIG_VIRTUAL_RESERVE_MEMORY)
+#include "reserve_mmap.c"
+#endif
 
 enum clear_refs_types {
 	CLEAR_REFS_ALL = 1,
@@ -1275,11 +1272,8 @@ static ssize_t clear_refs_write(struct file *file, const char __user *buf,
 					goto out_mm;
 				}
 				for (vma = mm->mmap; vma; vma = vma->vm_next) {
-					vm_write_begin(vma);
-					WRITE_ONCE(vma->vm_flags,
-						vma->vm_flags & ~VM_SOFTDIRTY);
+					vma->vm_flags &= ~VM_SOFTDIRTY;
 					vma_set_page_prot(vma);
-					vm_write_end(vma);
 				}
 				downgrade_write(&mm->mmap_sem);
 				break;
@@ -1758,7 +1752,11 @@ cont:
 			break;
 	}
 	pte_unmap_unlock(pte - 1, ptl);
+#if defined(OPLUS_FEATURE_PROCESS_RECLAIM) && defined(CONFIG_PROCESS_RECLAIM_ENHANCE)
+	reclaimed = reclaim_pages_from_list(&page_list, vma, NULL);
+#else
 	reclaimed = reclaim_pages_from_list(&page_list, vma);
+#endif
 
 	rp->nr_reclaimed += reclaimed;
 	rp->nr_to_reclaim -= reclaimed;

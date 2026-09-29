@@ -27,7 +27,6 @@
 #include <linux/export.h>
 #include <linux/suspend.h>
 #include <linux/syscore_ops.h>
-#include <linux/swait.h>
 #include <linux/ftrace.h>
 #include <linux/rtc.h>
 #include <trace/events/power.h>
@@ -66,7 +65,7 @@ EXPORT_SYMBOL_GPL(pm_suspend_global_flags);
 
 static const struct platform_suspend_ops *suspend_ops;
 static const struct platform_s2idle_ops *s2idle_ops;
-static DECLARE_SWAIT_QUEUE_HEAD(s2idle_wait_head);
+static DECLARE_WAIT_QUEUE_HEAD(s2idle_wait_head);
 
 enum s2idle_states __read_mostly s2idle_state;
 static DEFINE_RAW_SPINLOCK(s2idle_lock);
@@ -100,8 +99,8 @@ static void s2idle_enter(void)
 	/* Push all the CPUs into the idle loop. */
 	wake_up_all_idle_cpus();
 	/* Make the current CPU wait so it can enter the idle loop too. */
-	swait_event(s2idle_wait_head,
-		    s2idle_state == S2IDLE_STATE_WAKE);
+	wait_event(s2idle_wait_head,
+		   s2idle_state == S2IDLE_STATE_WAKE);
 
 	cpuidle_pause();
 	put_online_cpus();
@@ -169,7 +168,7 @@ void s2idle_wake(void)
 	raw_spin_lock_irqsave(&s2idle_lock, flags);
 	if (s2idle_state > S2IDLE_STATE_NONE) {
 		s2idle_state = S2IDLE_STATE_WAKE;
-		swake_up(&s2idle_wait_head);
+		wake_up(&s2idle_wait_head);
 	}
 	raw_spin_unlock_irqrestore(&s2idle_lock, flags);
 }
@@ -205,6 +204,7 @@ static int __init mem_sleep_default_setup(char *str)
 		if (mem_sleep_labels[state] &&
 		    !strcmp(str, mem_sleep_labels[state])) {
 			mem_sleep_default = state;
+			mem_sleep_current = state;
 			break;
 		}
 
@@ -331,11 +331,22 @@ MODULE_PARM_DESC(pm_test_delay,
 
 static int suspend_test(int level)
 {
-	
 #ifdef CONFIG_PM_DEBUG
+	#ifdef OPLUS_FEATURE_POWERINFO_STANDBY_DEBUG
+	//Nanwei.Deng@BSP.CHG.Basic 2018/05/03 modify for power debug
+	pr_info("%s pm_test_level:%d, level:%d\n", __func__,
+		pm_test_level, level);
+	#endif /* OPLUS_FEATURE_POWERINFO_STANDBY_DEBUG */
+	
 	if (pm_test_level == level) {
+		#ifndef OPLUS_FEATURE_POWERINFO_STANDBY_DEBUG
+		//Nanwei.Deng@BSP.CHG.Basic 2018/05/03 modify for power debug
 		pr_info("suspend debug: Waiting for %d second(s).\n",
 				pm_test_delay);
+		#else
+		pr_err("suspend debug: Waiting for %d second(s).\n",
+				pm_test_delay);
+		#endif /* OPLUS_FEATURE_POWERINFO_STANDBY_DEBUG */
 		mdelay(pm_test_delay * 1000);
 		return 1;
 	}
@@ -573,7 +584,7 @@ int suspend_devices_and_enter(suspend_state_t state)
 	suspend_test_start();
 	error = dpm_suspend_start(PMSG_SUSPEND);
 	if (error) {
-		pr_debug("Some devices failed to suspend, or early wake event detected\n");
+		pr_err("Some devices failed to suspend, or early wake event detected\n");
 		log_suspend_abort_reason(
 				"Some devices failed to suspend, or early wake event detected");
 		goto Recover_platform;
@@ -734,9 +745,9 @@ static int enter_state(suspend_state_t state)
 #else
 #ifndef CONFIG_SUSPEND_SKIP_SYNC
 	trace_suspend_resume(TPS("sync_filesystems"), 0, true);
-	pr_debug("Syncing filesystems ... ");
+	pr_info("Syncing filesystems ... ");
 	sys_sync();
-	pr_debug("done.\n");
+	pr_cont("done.\n");
 	trace_suspend_resume(TPS("sync_filesystems"), 0, false);
 #endif
 #endif /* VENDOR EDIT */
@@ -785,9 +796,16 @@ static void pm_suspend_marker(char *annotation)
 
 	getnstimeofday(&ts);
 	rtc_time_to_tm(ts.tv_sec, &tm);
-	pr_debug("PM: suspend %s %d-%02d-%02d %02d:%02d:%02d.%09lu UTC\n",
+#ifndef OPLUS_FEATURE_POWERINFO_STANDBY_DEBUG
+//Nanwei.Deng@BSP.CHG.Basic 2018/05/03 modify for power debug
+	pr_info("PM: suspend %s %d-%02d-%02d %02d:%02d:%02d.%09lu UTC\n",
 		annotation, tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
 		tm.tm_hour, tm.tm_min, tm.tm_sec, ts.tv_nsec);
+#else
+	pr_err("PM: suspend %s %d-%02d-%02d %02d:%02d:%02d.%09lu UTC\n",
+		annotation, tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+		tm.tm_hour, tm.tm_min, tm.tm_sec, ts.tv_nsec);
+#endif /* OPLUS_FEATURE_POWERINFO_STANDBY_DEBUG */
 }
 
 /**
@@ -805,7 +823,7 @@ int pm_suspend(suspend_state_t state)
 		return -EINVAL;
 
 	pm_suspend_marker("entry");
-	pr_debug("suspend entry (%s)\n", mem_sleep_labels[state]);
+	pr_info("suspend entry (%s)\n", mem_sleep_labels[state]);
 	error = enter_state(state);
 	if (error) {
 		suspend_stats.fail++;
@@ -814,7 +832,7 @@ int pm_suspend(suspend_state_t state)
 		suspend_stats.success++;
 	}
 	pm_suspend_marker("exit");
-	pr_debug("suspend exit\n");
+	pr_info("suspend exit\n");
 	measure_wake_up_time();
 	return error;
 }

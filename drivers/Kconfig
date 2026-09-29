@@ -213,8 +213,6 @@ source "drivers/hwtracing/stm/Kconfig"
 
 source "drivers/hwtracing/intel_th/Kconfig"
 
-source "drivers/hwtracing/google/Kconfig"
-
 source "drivers/fpga/Kconfig"
 
 source "drivers/fsi/Kconfig"
@@ -233,7 +231,4 @@ source "drivers/esoc/Kconfig"
 source "drivers/nfc/pn553-i2c/Kconfig"
 source "drivers/nfc/p73-spi/Kconfig"
 #endif /*OPLUS_NFC_BRINGUP*/
-
-source "drivers/energy_model/Kconfig"
-
 endmenu

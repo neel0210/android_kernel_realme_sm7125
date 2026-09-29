@@ -50,16 +50,12 @@ static void devfreq_max_unboost(struct work_struct *work);
 
 static struct df_boost_drv df_boost_drv_g __read_mostly = {
 	BOOST_DEV_INIT(df_boost_drv_g, DEVFREQ_CPU_LLCC_DDR_BW,
-		       CONFIG_DEVFREQ_CPU_LLCC_DDR_BW_BOOST_FREQ),
-	BOOST_DEV_INIT(df_boost_drv_g, DEVFREQ_CPU_CPU_LLC_BW,
-		       CONFIG_DEVFREQ_CPU_CPU_LLC_BW_BOOST_FREQ)
+		       CONFIG_DEVFREQ_CPU_LLCC_DDR_BW_BOOST_FREQ)
 };
-
-extern int kp_active_mode(void);
 
 static void __devfreq_boost_kick(struct boost_dev *b)
 {
-	if (!READ_ONCE(b->df) || test_bit(SCREEN_OFF, &b->state) || kp_active_mode() == 1)
+	if (!READ_ONCE(b->df) || test_bit(SCREEN_OFF, &b->state))
 		return;
 
 	set_bit(INPUT_BOOST, &b->state);
@@ -83,7 +79,7 @@ static void __devfreq_boost_kick_max(struct boost_dev *b,
 {
 	unsigned long boost_jiffies, curr_expires, new_expires;
 
-	if (!READ_ONCE(b->df) || test_bit(SCREEN_OFF, &b->state) || kp_active_mode() == 1)
+	if (!READ_ONCE(b->df) || test_bit(SCREEN_OFF, &b->state))
 		return;
 
 	boost_jiffies = msecs_to_jiffies(duration_ms);
@@ -309,9 +305,8 @@ static int __init devfreq_boost_init(void)
 	for (i = 0; i < DEVFREQ_MAX; i++) {
 		struct boost_dev *b = &d->devices[i];
 
-		thread[i] = kthread_run_perf_critical(cpu_perf_mask,
-						      devfreq_boost_thread, b,
-						      "devfreq_boostd/%d", i);
+		thread[i] = kthread_run(devfreq_boost_thread, b,
+					"devfreq_boostd/%d", i);
 		if (IS_ERR(thread[i])) {
 			ret = PTR_ERR(thread[i]);
 			pr_err("Failed to create kthread, err: %d\n", ret);

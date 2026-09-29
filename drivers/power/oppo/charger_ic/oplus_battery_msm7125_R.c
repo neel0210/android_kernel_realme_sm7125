@@ -11971,7 +11971,7 @@ static void oplus_set_otg_switch_status(bool value)
 		return;
 	}
 
-	g_oplus_chip->ui_otg_switch = value;
+	g_oplus_chip->ui_otg_switch = true;
 	chg = &g_oplus_chip->pmic_spmi.smb5_chip->chg;
 
 	rc = smblib_read(chg, USBIN_BASE + INT_RT_STS_OFFSET, &stat);
@@ -11990,15 +11990,9 @@ static void oplus_set_otg_switch_status(bool value)
 		return;
 	}
 
-	g_oplus_chip->otg_switch = value;
-
-	if (g_oplus_chip->otg_switch == true)
-		rc = smblib_masked_write(chg, TYPE_C_MODE_CFG_REG,
-				TYPEC_POWER_ROLE_CMD_MASK | TYPEC_TRY_MODE_MASK, 0);
-
-	else
-		rc = smblib_masked_write(chg, TYPE_C_MODE_CFG_REG,
-				TYPEC_POWER_ROLE_CMD_MASK | TYPEC_TRY_MODE_MASK, EN_SNK_ONLY_BIT);
+	g_oplus_chip->otg_switch = true;
+	rc = smblib_masked_write(chg, TYPE_C_MODE_CFG_REG,
+			TYPEC_POWER_ROLE_CMD_MASK | TYPEC_TRY_MODE_MASK, 0);
 
 	if (rc < 0) {
 		chg_err("fail to write pmic register\n");
@@ -13565,6 +13559,9 @@ static int smb5_batt_get_prop(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CHARGE_FULL:
 		rc = smblib_get_prop_from_bms(chg,
 				POWER_SUPPLY_PROP_CHARGE_FULL, val);
+		if (g_oplus_chip) {
+			val->intval = g_oplus_chip->batt_fcc * 1000;
+		}
 		break;
 
 	case POWER_SUPPLY_PROP_FORCE_RECHARGE:
@@ -13588,7 +13585,7 @@ static int smb5_batt_get_prop(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
 		if (g_oplus_chip) {
-			val->intval = g_oplus_chip->batt_fcc * 1000;
+			val->intval = g_oplus_chip->batt_capacity_mah * 1000;
 		}
 		break;
 	case POWER_SUPPLY_PROP_TIME_TO_FULL_NOW:
@@ -17368,48 +17365,43 @@ static bool oplus_check_pdphy_ready(void){
 }
 #define OPPO_SVID 0x22D9
 static void register_oplus_pdsvooc_svid(struct work_struct *work) {
-	int rc = 0;
 	struct oplus_chg_chip *chip = g_oplus_chip;
-	const char *pd_phandle = "qcom,oplus-pps-usbpd-detection";
 	struct smb_charger *chg;
-	struct usbpd *pd = NULL;
-	if(g_oplus_chip == NULL){
+	struct usbpd *pd;
+	int rc;
+
+	if (!chip || !chip->pmic_spmi.smb5_chip)
 		return;
-	}
 	chg = &chip->pmic_spmi.smb5_chip->chg;
-	if(chg == NULL){
-		pr_err(" chg NULL ");
+	if (!chg->dev)
 		return;
-	}
-	if(chg->dev == NULL){
-		pr_err(" dev NULL ");
+
+	pd = devm_usbpd_get_by_phandle(chg->dev,
+				     "qcom,oplus-pps-usbpd-detection");
+	if (!pd)
 		return;
-	}
-	pd = devm_usbpd_get_by_phandle(chg->dev, pd_phandle);
-	if( pd == NULL){
-		pr_err(" pd NULL ");
-		return;
-	}
-	pr_err(" pd NULL");
 	if (IS_ERR(pd)) {
-		chg_err("oplus pps usbpd phandle failed (%ld)\n", PTR_ERR(pd));
 		rc = PTR_ERR(pd);
 		chg->oplus_pd = NULL;
-		schedule_delayed_work(&chg->regist_pd, msecs_to_jiffies(1000));
-	} else {
-		chg_err("oplus pps usbpd phandle failed (%ld)\n", PTR_ERR(pd));
-		chg->oplus_pd = pd;
-		chg->oplus_svid_handler.svid = OPPO_SVID;
-		chg->oplus_svid_handler.vdm_received = NULL;
-		chg->oplus_svid_handler.connect = oplus_usbpd_connect_cb;
-		chg->oplus_svid_handler.svdm_received = oplus_usbpd_response_cb;
-		chg->oplus_svid_handler.disconnect = oplus_usbpd_disconnect_cb;
-		rc = usbpd_register_svid(chg->oplus_pd, &chg->oplus_svid_handler);
-		if (rc){
-			chg_err("pps pd registration failed\n");
-		}
-		chg_err("pps pd registration success\n");
+		/* Retry while the controller is being registered/probed. */
+		if (rc == -EAGAIN || rc == -ENODEV || rc == -EPROBE_DEFER)
+			schedule_delayed_work(&chg->regist_pd,
+					      msecs_to_jiffies(1000));
+		else if (rc != -ENXIO)
+			chg_err("oplus pps usbpd lookup failed (%d)\n", rc);
+		/* -ENXIO: this board has no optional PPS detection phandle. */
+		return;
 	}
+
+	chg->oplus_pd = pd;
+	chg->oplus_svid_handler.svid = OPPO_SVID;
+	chg->oplus_svid_handler.vdm_received = NULL;
+	chg->oplus_svid_handler.connect = oplus_usbpd_connect_cb;
+	chg->oplus_svid_handler.svdm_received = oplus_usbpd_response_cb;
+	chg->oplus_svid_handler.disconnect = oplus_usbpd_disconnect_cb;
+	rc = usbpd_register_svid(pd, &chg->oplus_svid_handler);
+	if (rc)
+		chg_err("pps pd registration failed (%d)\n", rc);
 }
 static int smb5_probe(struct platform_device *pdev)
 {
@@ -17742,6 +17734,7 @@ static int smb5_probe(struct platform_device *pdev)
 	/* lizhijie@BSP.CHG.Basic, 2020/02/25, lzj Add for charging*/
 	oplus_chg_parse_custom_dt(oplus_chip);
 	oplus_chg_init(oplus_chip);
+	oplus_set_otg_switch_status(true);
 	schedule_delayed_work(&chg->regist_pd, 0);
 #ifdef VENDOR_EDIT
 //Gang.Yan add for usbtemp
@@ -17836,7 +17829,6 @@ static int smb5_probe(struct platform_device *pdev)
 	device_init_wakeup(chg->dev, true);
 
 	pr_info("QPNP SMB5 probed successfully\n");
-
 	return rc;
 
 free_irq:

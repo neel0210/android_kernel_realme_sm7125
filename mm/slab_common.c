@@ -11,6 +11,7 @@
 #include <linux/interrupt.h>
 #include <linux/memory.h>
 #include <linux/compiler.h>
+#include <linux/kfence.h>
 #include <linux/module.h>
 #include <linux/cpu.h>
 #include <linux/uaccess.h>
@@ -23,8 +24,6 @@
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/kmem.h>
-
-#include "internal.h"
 
 #include "slab.h"
 
@@ -46,7 +45,7 @@ static DECLARE_WORK(slab_caches_to_rcu_destroy_work,
 		SLAB_FAILSLAB | SLAB_KASAN)
 
 #define SLAB_MERGE_SAME (SLAB_RECLAIM_ACCOUNT | SLAB_CACHE_DMA | \
-			 SLAB_ACCOUNT)
+			 SLAB_CACHE_DMA32 | SLAB_ACCOUNT)
 
 /*
  * Merge control. If this is set then no merging of slab caches will occur.
@@ -148,7 +147,6 @@ void slab_init_memcg_params(struct kmem_cache *s)
 	s->memcg_params.root_cache = NULL;
 	RCU_INIT_POINTER(s->memcg_params.memcg_caches, NULL);
 	INIT_LIST_HEAD(&s->memcg_params.children);
-	s->memcg_params.dying = false;
 }
 
 static int init_memcg_params(struct kmem_cache *s,
@@ -465,9 +463,6 @@ kmem_cache_create(const char *name, size_t size, size_t align,
 	 */
 	flags &= CACHE_CREATE_MASK;
 
-	/* Embrace davem */
-	flags |= SLAB_HWCACHE_ALIGN;
-
 	s = __kmem_cache_alias(name, size, align, flags, ctor);
 	if (s)
 		goto out_unlock;
@@ -532,6 +527,7 @@ static void slab_caches_to_rcu_destroy_workfn(struct work_struct *work)
 	rcu_barrier();
 
 	list_for_each_entry_safe(s, s2, &to_destroy, list) {
+		kfence_shutdown_cache(s);
 #ifdef SLAB_SUPPORTS_SYSFS
 		sysfs_slab_release(s);
 #else
@@ -558,6 +554,7 @@ static int shutdown_cache(struct kmem_cache *s)
 		list_add_tail(&s->list, &slab_caches_to_rcu_destroy);
 		schedule_work(&slab_caches_to_rcu_destroy_work);
 	} else {
+		kfence_shutdown_cache(s);
 #ifdef SLAB_SUPPORTS_SYSFS
 		sysfs_slab_unlink(s);
 		sysfs_slab_release(s);
@@ -598,7 +595,7 @@ void memcg_create_kmem_cache(struct mem_cgroup *memcg,
 	 * The memory cgroup could have been offlined while the cache
 	 * creation work was pending.
 	 */
-	if (memcg->kmem_state != KMEM_ONLINE || root_cache->memcg_params.dying)
+	if (memcg->kmem_state != KMEM_ONLINE)
 		goto out_unlock;
 
 	idx = memcg_cache_id(memcg);
@@ -701,14 +698,11 @@ void slab_deactivate_memcg_cache_rcu_sched(struct kmem_cache *s,
 	    WARN_ON_ONCE(s->memcg_params.deact_fn))
 		return;
 
-	if (s->memcg_params.root_cache->memcg_params.dying)
-		return;
-
 	/* pin memcg so that @s doesn't get destroyed in the middle */
 	css_get(&s->memcg_params.memcg->css);
 
 	s->memcg_params.deact_fn = deact_fn;
-	call_rcu(&s->memcg_params.deact_rcu_head, kmemcg_deactivate_rcufn);
+	call_rcu_sched(&s->memcg_params.deact_rcu_head, kmemcg_deactivate_rcufn);
 }
 
 void memcg_deactivate_kmem_caches(struct mem_cgroup *memcg)
@@ -815,35 +809,10 @@ static int shutdown_memcg_caches(struct kmem_cache *s)
 		return -EBUSY;
 	return 0;
 }
-
-static void flush_memcg_workqueue(struct kmem_cache *s)
-{
-	mutex_lock(&slab_mutex);
-	s->memcg_params.dying = true;
-	mutex_unlock(&slab_mutex);
-
-	/*
-	 * SLUB deactivates the kmem_caches through call_rcu. Make
-	 * sure all registered rcu callbacks have been invoked.
-	 */
-	if (IS_ENABLED(CONFIG_SLUB))
-		rcu_barrier();
-
-	/*
-	 * SLAB and SLUB create memcg kmem_caches through workqueue and SLUB
-	 * deactivates the memcg kmem_caches through workqueue. Make sure all
-	 * previous workitems on workqueue are processed.
-	 */
-	flush_workqueue(memcg_kmem_cache_wq);
-}
 #else
 static inline int shutdown_memcg_caches(struct kmem_cache *s)
 {
 	return 0;
-}
-
-static inline void flush_memcg_workqueue(struct kmem_cache *s)
-{
 }
 #endif /* CONFIG_MEMCG && !CONFIG_SLOB */
 
@@ -861,8 +830,6 @@ void kmem_cache_destroy(struct kmem_cache *s)
 
 	if (unlikely(!s))
 		return;
-
-	flush_memcg_workqueue(s);
 
 	get_online_cpus();
 	get_online_mems();
@@ -1175,18 +1142,6 @@ void __init create_kmalloc_caches(unsigned long flags)
 }
 #endif /* !CONFIG_SLOB */
 
-gfp_t kmalloc_fix_flags(gfp_t flags)
-{
-	gfp_t invalid_mask = flags & GFP_SLAB_BUG_MASK;
-
-	flags &= ~GFP_SLAB_BUG_MASK;
-	pr_warn("Unexpected gfp: %#x (%pGg). Fixing up to gfp: %#x (%pGg). Fix your code!\n",
-			invalid_mask, &invalid_mask, flags, &flags);
-	dump_stack();
-
-	return flags;
-}
-
 /*
  * To avoid unnecessary overhead, we pass through large allocation requests
  * directly to the page allocator. We use __GFP_COMP, because we will need to
@@ -1196,9 +1151,6 @@ void *kmalloc_order(size_t size, gfp_t flags, unsigned int order)
 {
 	void *ret;
 	struct page *page;
-
-	if (unlikely(flags & GFP_SLAB_BUG_MASK))
-		flags = kmalloc_fix_flags(flags);
 
 	flags |= __GFP_COMP;
 	page = alloc_pages(flags, order);
@@ -1545,6 +1497,52 @@ void kzfree(const void *p)
 	kfree(mem);
 }
 EXPORT_SYMBOL(kzfree);
+
+/**
+ * ksize - get the actual amount of memory allocated for a given object
+ * @objp: Pointer to the object
+ *
+ * kmalloc may internally round up allocations and return more memory
+ * than requested. ksize() can be used to determine the actual amount of
+ * memory allocated. The caller may use this additional memory, even though
+ * a smaller amount of memory was initially specified with the kmalloc call.
+ * The caller must guarantee that objp points to a valid object previously
+ * allocated with either kmalloc() or kmem_cache_alloc(). The object
+ * must not be freed during the duration of the call.
+ *
+ * Return: size of the actual memory used by @objp in bytes
+ */
+size_t ksize(const void *objp)
+{
+	size_t size;
+
+	if (WARN_ON_ONCE(!objp))
+		return 0;
+	/*
+	 * We need to check that the pointed to object is valid, and only then
+	 * unpoison the shadow memory below. We use __kasan_check_read(), to
+	 * generate a more useful report at the time ksize() is called (rather
+	 * than later where behaviour is undefined due to potential
+	 * use-after-free or double-free).
+	 *
+	 * If the pointed to memory is invalid we return 0, to avoid users of
+	 * ksize() writing to and potentially corrupting the memory region.
+	 *
+	 * We want to perform the check before __ksize(), to avoid potentially
+	 * crashing in __ksize() due to accessing invalid metadata.
+	 */
+	if (unlikely(objp == ZERO_SIZE_PTR) || !__kasan_check_read(objp, 1))
+		return 0;
+
+	size = kfence_ksize(objp) ?: __ksize(objp);
+	/*
+	 * We assume that ksize callers could use whole allocated area,
+	 * so we need to unpoison this area.
+	 */
+	kasan_unpoison_shadow(objp, size);
+	return size;
+}
+EXPORT_SYMBOL(ksize);
 
 /* Tracepoints definitions. */
 EXPORT_TRACEPOINT_SYMBOL(kmalloc);

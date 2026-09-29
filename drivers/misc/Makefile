@@ -51,7 +51,6 @@ obj-$(CONFIG_SRAM)		+= sram.o
 obj-$(CONFIG_SRAM_EXEC)		+= sram-exec.o
 obj-y				+= mic/
 obj-$(CONFIG_GENWQE)		+= genwqe/
-obj-$(CONFIG_KPROFILES)         += kprofiles/
 obj-$(CONFIG_HDCP_QSEECOM)	+= hdcp_qseecom.o
 obj-$(CONFIG_HDCP_QSEECOM)	+= msm_hdcp.o
 obj-$(CONFIG_QSEECOM)		+= qseecom.o
@@ -63,6 +62,7 @@ obj-$(CONFIG_ASPEED_LPC_CTRL)  += aspeed-lpc-ctrl.o
 obj-$(CONFIG_ASPEED_LPC_SNOOP) += aspeed-lpc-snoop.o
 obj-$(CONFIG_PCI_ENDPOINT_TEST)        += pci_endpoint_test.o
 obj-$(CONFIG_FPR_FPC) 	+= fpr_FingerprintCard/
+obj-$(CONFIG_BATTERY_SAVER)	+= battery_saver.o
 
 obj-$(CONFIG_UID_SYS_STATS)	+= uid_sys_stats.o
 obj-$(CONFIG_MEMORY_STATE_TIME)	+= memory_state_time.o
@@ -77,12 +77,10 @@ obj-$(CONFIG_TEST_IRQ_REQUESTER) += irq_requester.o
 obj-$(CONFIG_OPLUS_RF_CABLE_MONITOR)	+= oplus_rf_cable_monitor.o
 #endif
 
-obj-$(CONFIG_UID_SYS_STATS)	+= uid_sys_stats.o
-obj-$(CONFIG_MEMORY_STATE_TIME)	+= memory_state_time.o
-obj-$(CONFIG_QCOM_XR_SMRTVWR_MISC) += qcom-xr-smrtvwr-misc.o
-obj-$(CONFIG_TUSB1064_XR_MISC) += tusb1064.o
-obj-$(CONFIG_VXR200_XR_MISC) += vxr7200.o
-obj-$(CONFIG_BATTERY_SAVER)	+= battery_saver.o
+#ifdef OPLUS_FEATURE_CHG_BASIC
+obj-y               += motor.o
+obj-y               += oppo_motor/
+#endif
 
 #ifdef OPLUS_FEATURE_TP_BASIC
 #Qicai.Gu@BSP.TP, 2020/08/10, modify for sim detect

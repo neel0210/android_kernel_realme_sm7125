@@ -332,8 +332,6 @@ int f2fs_start_gc_thread(struct f2fs_sb_info *sbi)
 		kvfree(gc_th);
 		sbi->gc_thread = NULL;
 	}
-	set_task_ioprio(sbi->gc_thread->f2fs_gc_task,
-			IOPRIO_PRIO_VALUE(IOPRIO_CLASS_IDLE, 0));
 out:
 	return err;
 }
@@ -1866,7 +1864,7 @@ int f2fs_gc(struct f2fs_sb_info *sbi, bool sync,
 	unsigned int init_segno = segno;
 	struct gc_inode_list gc_list = {
 		.ilist = LIST_HEAD_INIT(gc_list.ilist),
-		.iroot = RADIX_TREE_INIT(GFP_NOFS),
+		.iroot = RADIX_TREE_INIT(gc_list.iroot, GFP_NOFS),
 	};
 	unsigned long long last_skipped = sbi->skipped_atomic_files[FG_GC];
 	unsigned long long first_skipped;
@@ -2061,7 +2059,7 @@ static int free_segment_range(struct f2fs_sb_info *sbi,
 	for (segno = start; segno <= end; segno += sbi->segs_per_sec) {
 		struct gc_inode_list gc_list = {
 			.ilist = LIST_HEAD_INIT(gc_list.ilist),
-			.iroot = RADIX_TREE_INIT(GFP_NOFS),
+			.iroot = RADIX_TREE_INIT(gc_list.iroot, GFP_NOFS),
 		};
 
 		do_garbage_collect(sbi, segno, &gc_list, FG_GC);

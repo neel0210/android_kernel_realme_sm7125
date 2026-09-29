@@ -1101,6 +1101,11 @@ static int rb_check_list(struct ring_buffer_per_cpu *cpu_buffer,
  *
  * As a safety measure we check to make sure the data pages have not
  * been corrupted.
+ *
+ * Callers of this function need to guarantee that the list of pages doesn't get
+ * modified during the check. In particular, if it's possible that the function
+ * is invoked with concurrent readers which can swap in a new reader page then
+ * the caller should take cpu_buffer->reader_lock.
  */
 static int rb_check_pages(struct ring_buffer_per_cpu *cpu_buffer)
 {
@@ -1777,10 +1782,14 @@ int ring_buffer_resize(struct ring_buffer *buffer, unsigned long size,
 		 * There could have been a race between checking
 		 * record_disable and incrementing it.
 		 */
-		synchronize_rcu();
+		synchronize_sched();
 		for_each_buffer_cpu(buffer, cpu) {
+			unsigned long flags;
+
 			cpu_buffer = buffer->buffers[cpu];
+			raw_spin_lock_irqsave(&cpu_buffer->reader_lock, flags);
 			rb_check_pages(cpu_buffer);
+			raw_spin_unlock_irqrestore(&cpu_buffer->reader_lock, flags);
 		}
 		atomic_dec(&buffer->record_disabled);
 	}
@@ -2776,6 +2785,12 @@ rb_reserve_next_event(struct ring_buffer *buffer,
 	int nr_loops = 0;
 	u64 diff;
 
+	/* ring buffer does cmpxchg, make sure it is safe in NMI context */
+	if (!IS_ENABLED(CONFIG_ARCH_HAVE_NMI_SAFE_CMPXCHG) &&
+	    (unlikely(in_nmi()))) {
+		return NULL;
+	}
+
 	rb_start_commit(cpu_buffer);
 
 #ifdef CONFIG_RING_BUFFER_ALLOW_SWAP
@@ -3107,7 +3122,7 @@ static bool rb_per_cpu_empty(struct ring_buffer_per_cpu *cpu_buffer)
  * This prevents all writes to the buffer. Any attempt to write
  * to the buffer after this will fail and return NULL.
  *
- * The caller should call synchronize_rcu() after this.
+ * The caller should call synchronize_sched() after this.
  */
 void ring_buffer_record_disable(struct ring_buffer *buffer)
 {
@@ -3209,7 +3224,7 @@ int ring_buffer_record_is_set_on(struct ring_buffer *buffer)
  * This prevents all writes to the buffer. Any attempt to write
  * to the buffer after this will fail and return NULL.
  *
- * The caller should call synchronize_rcu() after this.
+ * The caller should call synchronize_sched() after this.
  */
 void ring_buffer_record_disable_cpu(struct ring_buffer *buffer, int cpu)
 {
@@ -4169,7 +4184,7 @@ EXPORT_SYMBOL_GPL(ring_buffer_read_prepare);
 void
 ring_buffer_read_prepare_sync(void)
 {
-	synchronize_rcu();
+	synchronize_sched();
 }
 EXPORT_SYMBOL_GPL(ring_buffer_read_prepare_sync);
 
@@ -4233,35 +4248,24 @@ ring_buffer_read_finish(struct ring_buffer_iter *iter)
 EXPORT_SYMBOL_GPL(ring_buffer_read_finish);
 
 /**
- * ring_buffer_read - read the next item in the ring buffer by the iterator
+ * ring_buffer_iter_advance - advance the iterator to the next location
  * @iter: The ring buffer iterator
- * @ts: The time stamp of the event read.
  *
- * This reads the next event in the ring buffer and increments the iterator.
+ * Move the location of the iterator such that the next read will
+ * be the next location of the iterator.
  */
-struct ring_buffer_event *
-ring_buffer_read(struct ring_buffer_iter *iter, u64 *ts)
+void ring_buffer_iter_advance(struct ring_buffer_iter *iter)
 {
-	struct ring_buffer_event *event;
 	struct ring_buffer_per_cpu *cpu_buffer = iter->cpu_buffer;
 	unsigned long flags;
 
 	raw_spin_lock_irqsave(&cpu_buffer->reader_lock, flags);
- again:
-	event = rb_iter_peek(iter, ts);
-	if (!event)
-		goto out;
-
-	if (event->type_len == RINGBUF_TYPE_PADDING)
-		goto again;
 
 	rb_advance_iter(iter);
- out:
-	raw_spin_unlock_irqrestore(&cpu_buffer->reader_lock, flags);
 
-	return event;
+	raw_spin_unlock_irqrestore(&cpu_buffer->reader_lock, flags);
 }
-EXPORT_SYMBOL_GPL(ring_buffer_read);
+EXPORT_SYMBOL_GPL(ring_buffer_iter_advance);
 
 /**
  * ring_buffer_size - return the size of the ring buffer (in bytes)
@@ -4350,7 +4354,7 @@ void ring_buffer_reset_cpu(struct ring_buffer *buffer, int cpu)
 	atomic_inc(&cpu_buffer->record_disabled);
 
 	/* Make sure all commits have finished */
-	synchronize_rcu();
+	synchronize_sched();
 
 	raw_spin_lock_irqsave(&cpu_buffer->reader_lock, flags);
 
@@ -4485,7 +4489,7 @@ int ring_buffer_swap_cpu(struct ring_buffer *buffer_a,
 		goto out;
 
 	/*
-	 * We can't do a synchronize_rcu here because this
+	 * We can't do a synchronize_sched here because this
 	 * function can be called in atomic context.
 	 * Normally this will be called from the same CPU as cpu.
 	 * If not it's up to the caller to protect this.

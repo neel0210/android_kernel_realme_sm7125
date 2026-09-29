@@ -239,6 +239,10 @@ enum req_flag_bits {
 	__REQ_INTEGRITY,	/* I/O includes block integrity payload */
 	__REQ_FUA,		/* forced unit access */
 	__REQ_PREFLUSH,		/* request for cache flush */
+#ifdef OPLUS_FEATURE_UIFIRST
+	__REQ_UX,		/* ux activity */
+	__REQ_FG,		/* foreground activity */
+#endif
 	__REQ_RAHEAD,		/* read ahead, can fail anytime */
 	__REQ_BACKGROUND,	/* background IO */
 
@@ -254,6 +258,11 @@ enum req_flag_bits {
 
 	__REQ_URGENT,		/* urgent request */
 	__REQ_NOWAIT,           /* Don't wait if request will block */
+	/*
+	 * set for "ide_preempt" requests and also for requests for which the
+	 * SCSI "quiesce" state must be ignored.
+	 */
+	__REQ_PREEMPT,
 	__REQ_NR_BITS,		/* stops here */
 };
 
@@ -269,12 +278,17 @@ enum req_flag_bits {
 #define REQ_INTEGRITY		(1ULL << __REQ_INTEGRITY)
 #define REQ_FUA			(1ULL << __REQ_FUA)
 #define REQ_PREFLUSH		(1ULL << __REQ_PREFLUSH)
+#ifdef OPLUS_FEATURE_UIFIRST
+#define REQ_UX			(1ULL << __REQ_UX)
+#define REQ_FG			(1ULL << __REQ_FG)
+#endif
 #define REQ_RAHEAD		(1ULL << __REQ_RAHEAD)
 #define REQ_BACKGROUND		(1ULL << __REQ_BACKGROUND)
 #define REQ_NOENCRYPT           (1ULL << __REQ_NOENCRYPT)
 
 #define REQ_NOUNMAP		(1ULL << __REQ_NOUNMAP)
 #define REQ_NOWAIT		(1ULL << __REQ_NOWAIT)
+#define REQ_PREEMPT		(1ULL << __REQ_PREEMPT)
 
 #define REQ_FAILFAST_MASK \
 	(REQ_FAILFAST_DEV | REQ_FAILFAST_TRANSPORT | REQ_FAILFAST_DRIVER)

@@ -601,6 +601,7 @@ void wbc_attach_and_unlock_inode(struct writeback_control *wbc,
 	if (unlikely(wb_dying(wbc->wb) && !css_is_dying(wbc->wb->memcg_css)))
 		inode_switch_wbs(inode, wbc->wb_id);
 }
+EXPORT_SYMBOL_GPL(wbc_attach_and_unlock_inode);
 
 /**
  * wbc_detach_inode - disassociate wbc from inode and perform foreign detection
@@ -720,6 +721,7 @@ void wbc_detach_inode(struct writeback_control *wbc)
 	wb_put(wbc->wb);
 	wbc->wb = NULL;
 }
+EXPORT_SYMBOL_GPL(wbc_detach_inode);
 
 /**
  * wbc_account_io - account IO issued during writeback
@@ -1417,14 +1419,6 @@ __writeback_single_inode(struct inode *inode, struct writeback_control *wbc)
 	 */
 	spin_lock(&inode->i_lock);
 	dirty = inode->i_state & I_DIRTY;
-	if ((inode->i_state & I_DIRTY_TIME) &&
-	    ((dirty & (I_DIRTY_SYNC | I_DIRTY_DATASYNC)) ||
-	     wbc->sync_mode == WB_SYNC_ALL || wbc->for_sync ||
-	     time_after(jiffies, inode->dirtied_time_when +
-			dirtytime_expire_interval * HZ))) {
-		dirty |= I_DIRTY_TIME;
-		trace_writeback_lazytime(inode);
-	}
 	inode->i_state &= ~dirty;
 
 	/*

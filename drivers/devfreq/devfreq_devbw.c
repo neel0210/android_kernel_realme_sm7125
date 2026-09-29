@@ -212,7 +212,7 @@ int devfreq_add_devbw(struct device *dev)
 	d->num_paths = num_paths;
 
 	p = &d->dp;
-	p->polling_ms = 200;
+	p->polling_ms = 50;
 	p->target = devbw_target;
 	p->get_dev_status = devbw_get_dev_status;
 	if (of_get_child_count(dev->of_node))
@@ -240,9 +240,6 @@ int devfreq_add_devbw(struct device *dev)
 
 	if (!strcmp(dev_name(dev), "soc:qcom,cpu-llcc-ddr-bw"))
 		devfreq_register_boost_device(DEVFREQ_CPU_LLCC_DDR_BW, d->df);
-
-	if (!strcmp(dev_name(dev), "soc:qcom,cpu-cpu-llcc-bw"))
-		devfreq_register_boost_device(DEVFREQ_CPU_CPU_LLC_BW, d->df);
 
 	return 0;
 }

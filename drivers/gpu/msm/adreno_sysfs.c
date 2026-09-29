@@ -1,4 +1,5 @@
 /* Copyright (c) 2014-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -27,13 +28,6 @@ struct adreno_sysfs_attribute {
 #define _ADRENO_SYSFS_ATTR(_name, __show, __store) \
 struct adreno_sysfs_attribute adreno_attr_##_name = { \
 	.attr = __ATTR(_name, 0644, __show, __store), \
-	.show = _ ## _name ## _show, \
-	.store = _ ## _name ## _store, \
-}
-
-#define _ADRENO_SYSFS_FPERM_ATTR(_name, _fperm, __show, __store) \
-struct adreno_sysfs_attribute adreno_attr_##_name = { \
-	.attr = __ATTR(_name, _fperm, __show, __store), \
 	.show = _ ## _name ## _show, \
 	.store = _ ## _name ## _store, \
 }
@@ -277,7 +271,7 @@ static unsigned int _hwcg_show(struct adreno_device *adreno_dev)
 static int _throttling_store(struct adreno_device *adreno_dev,
 	unsigned int val)
 {
-	return 0;
+	return _pwrctrl_store(adreno_dev, val, ADRENO_THROTTLING_CTRL);
 }
 
 static unsigned int _throttling_show(struct adreno_device *adreno_dev)
@@ -535,6 +529,31 @@ static int _acd_data_store(struct adreno_device *adreno_dev, unsigned int val)
 	return 0;
 }
 
+static unsigned int _perfcounter_show(struct adreno_device *adreno_dev)
+{
+	return adreno_dev->perfcounter;
+}
+
+static int _perfcounter_store(struct adreno_device *adreno_dev,
+		unsigned int val)
+{
+	struct kgsl_device *device = KGSL_DEVICE(adreno_dev);
+
+	if (adreno_dev->perfcounter == val)
+		return 0;
+
+	mutex_lock(&device->mutex);
+
+	/* Power down the GPU before changing the state */
+	kgsl_pwrctrl_change_state(device, KGSL_STATE_SUSPEND);
+	adreno_dev->perfcounter = val;
+	kgsl_pwrctrl_change_state(device, KGSL_STATE_SLUMBER);
+
+	mutex_unlock(&device->mutex);
+
+	return 0;
+}
+
 static ssize_t _sysfs_store_u32(struct device *dev,
 		struct device_attribute *attr,
 		const char *buf, size_t count)
@@ -612,9 +631,6 @@ static ssize_t _sysfs_show_bool(struct device *dev,
 #define ADRENO_SYSFS_BOOL(_name) \
 	_ADRENO_SYSFS_ATTR(_name, _sysfs_show_bool, _sysfs_store_bool)
 
-#define ADRENO_SYSFS_RO_BOOL(_name) \
-	_ADRENO_SYSFS_FPERM_ATTR(_name, 0444, _sysfs_show_bool, _sysfs_store_bool)
-
 #define ADRENO_SYSFS_U32(_name) \
 	_ADRENO_SYSFS_ATTR(_name, _sysfs_show_u32, _sysfs_store_u32)
 
@@ -638,10 +654,11 @@ static ADRENO_SYSFS_BOOL(sptp_pc);
 static ADRENO_SYSFS_BOOL(lm);
 static ADRENO_SYSFS_BOOL(preemption);
 static ADRENO_SYSFS_BOOL(hwcg);
-static ADRENO_SYSFS_RO_BOOL(throttling);
+static ADRENO_SYSFS_BOOL(throttling);
 static ADRENO_SYSFS_BOOL(ifpc);
 static ADRENO_SYSFS_RO_U32(ifpc_count);
 static ADRENO_SYSFS_BOOL(acd);
+static ADRENO_SYSFS_BOOL(perfcounter);
 
 static ADRENO_SYSFS_U32(acd_data_index);
 static ADRENO_SYSFS_U32(acd_version);
@@ -650,32 +667,33 @@ static ADRENO_SYSFS_U32(acd_num_levels);
 static ADRENO_SYSFS_U32(acd_enable_by_level);
 static ADRENO_SYSFS_U32(acd_data);
 
-static const struct device_attribute *_attr_list[] = {
-	&adreno_attr_ft_policy.attr,
-	&adreno_attr_ft_pagefault_policy.attr,
-	&adreno_attr_ft_long_ib_detect.attr,
-	&adreno_attr_ft_hang_intr_status.attr,
-	&dev_attr_wake_nice.attr,
-	&adreno_attr_sptp_pc.attr,
-	&adreno_attr_lm.attr,
-	&adreno_attr_preemption.attr,
-	&adreno_attr_hwcg.attr,
-	&adreno_attr_throttling.attr,
-	&adreno_attr_gpu_llc_slice_enable.attr,
-	&adreno_attr_gpuhtw_llc_slice_enable.attr,
-	&adreno_attr_preempt_level.attr,
-	&adreno_attr_usesgmem.attr,
-	&adreno_attr_skipsaverestore.attr,
-	&adreno_attr_ifpc.attr,
-	&adreno_attr_ifpc_count.attr,
-	&adreno_attr_preempt_count.attr,
-	&adreno_attr_acd.attr,
-	&adreno_attr_acd_data_index.attr,
-	&adreno_attr_acd_version.attr,
-	&adreno_attr_acd_stride.attr,
-	&adreno_attr_acd_num_levels.attr,
-	&adreno_attr_acd_enable_by_level.attr,
-	&adreno_attr_acd_data.attr,
+static const struct attribute *_attr_list[] = {
+	&adreno_attr_ft_policy.attr.attr,
+	&adreno_attr_ft_pagefault_policy.attr.attr,
+	&adreno_attr_ft_long_ib_detect.attr.attr,
+	&adreno_attr_ft_hang_intr_status.attr.attr,
+	&dev_attr_wake_nice.attr.attr,
+	&adreno_attr_sptp_pc.attr.attr,
+	&adreno_attr_lm.attr.attr,
+	&adreno_attr_preemption.attr.attr,
+	&adreno_attr_hwcg.attr.attr,
+	&adreno_attr_throttling.attr.attr,
+	&adreno_attr_gpu_llc_slice_enable.attr.attr,
+	&adreno_attr_gpuhtw_llc_slice_enable.attr.attr,
+	&adreno_attr_preempt_level.attr.attr,
+	&adreno_attr_usesgmem.attr.attr,
+	&adreno_attr_skipsaverestore.attr.attr,
+	&adreno_attr_ifpc.attr.attr,
+	&adreno_attr_ifpc_count.attr.attr,
+	&adreno_attr_preempt_count.attr.attr,
+	&adreno_attr_acd.attr.attr,
+	&adreno_attr_perfcounter.attr.attr,
+	&adreno_attr_acd_data_index.attr.attr,
+	&adreno_attr_acd_version.attr.attr,
+	&adreno_attr_acd_stride.attr.attr,
+	&adreno_attr_acd_num_levels.attr.attr,
+	&adreno_attr_acd_enable_by_level.attr.attr,
+	&adreno_attr_acd_data.attr.attr,
 	NULL,
 };
 
@@ -810,7 +828,7 @@ void adreno_sysfs_close(struct adreno_device *adreno_dev)
 	struct kgsl_device *device = KGSL_DEVICE(adreno_dev);
 
 	ppd_sysfs_close(adreno_dev);
-	kgsl_remove_device_sysfs_files(device->dev, _attr_list);
+	sysfs_remove_files(&device->dev->kobj, _attr_list);
 }
 
 /**
@@ -825,11 +843,14 @@ int adreno_sysfs_init(struct adreno_device *adreno_dev)
 	struct kgsl_device *device = KGSL_DEVICE(adreno_dev);
 	int ret;
 
-	ret = kgsl_create_device_sysfs_files(device->dev, _attr_list);
+	ret = sysfs_create_files(&device->dev->kobj, _attr_list);
 
 	/* Add the PPD directory and files */
-	if (ret == 0)
+	if (ret == 0) {
+		/* Notify userspace */
+		kobject_uevent(&device->dev->kobj, KOBJ_ADD);
 		ppd_sysfs_init(adreno_dev);
+	}
 
 	return 0;
 }

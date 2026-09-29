@@ -23,9 +23,9 @@ KCOV_INSTRUMENT_vmstat.o := n
 
 mmu-y			:= nommu.o
 mmu-$(CONFIG_MMU)	:= gup.o highmem.o memory.o mincore.o \
-			   mlock.o mmap.o mprotect.o mremap.o msync.o \
-			   page_vma_mapped.o pagewalk.o pgtable-generic.o \
-			   rmap.o vmalloc.o
+			   mlock.o mmap.o mmu_gather.o mprotect.o mremap.o \
+			   msync.o page_vma_mapped.o pagewalk.o \
+			   pgtable-generic.o rmap.o vmalloc.o
 
 
 ifdef CONFIG_CROSS_MEMORY_ATTACH
@@ -70,6 +70,7 @@ obj-$(CONFIG_PAGE_POISONING) += page_poison.o
 obj-$(CONFIG_SLAB) += slab.o
 obj-$(CONFIG_SLUB) += slub.o
 obj-$(CONFIG_KASAN)	+= kasan/
+obj-$(CONFIG_KFENCE) += kfence/
 obj-$(CONFIG_FAILSLAB) += failslab.o
 obj-$(CONFIG_MEMORY_HOTPLUG) += memory_hotplug.o
 obj-$(CONFIG_MEMTEST)		+= memtest.o
@@ -106,11 +107,28 @@ obj-$(CONFIG_PERCPU_STATS) += percpu-stats.o
 obj-$(CONFIG_HMM) += hmm.o
 obj-$(CONFIG_PROCESS_RECLAIM)	+= process_reclaim.o
 
+#ifdef OPLUS_FEATURE_PROCESS_RECLAIM
+ifdef CONFIG_PROCESS_RECLAIM_ENHANCE
+obj-y += process_mm_reclaim.o
+else
+obj-y += process_mm_reclaim_weak.o
+endif
+#endif /* OPLUS_FEATURE_PROCESS_RECLAIM */
+
 #ifdef OPLUS_FEATURE_HEALTHINFO
 #/* Jiheng.Xie@TECH.BSP.Kernel, 2019-12-11, add for slub debug*/
 obj-y += oppo_healthinfo/
 #endif /* OPLUS_FEATURE_HEALTHINFO */
 
+#ifdef OPLUS_FEATURE_MULTI_KSWAPD
+obj-$(CONFIG_OPLUS_MULTI_KSWAPD) += multi_kswapd/
+#endif /*OPLUS_FEATURE_MULTI_KSWAPD*/
+
 #if defined(OPLUS_FEATURE_MULTI_FREEAREA)
 obj-$(CONFIG_PHYSICAL_ANTI_FRAGMENTATION) += multi_freearea.o
 #endif
+
+#if defined(OPLUS_FEATURE_VIRTUAL_RESERVE_MEMORY)
+obj-$(CONFIG_VIRTUAL_RESERVE_MEMORY) += resmap_account.o
+#endif /*defined(OPLUS_FEATURE_VIRTUAL_RESERVE_MEMORY)
+obj-$(CONFIG_OOM_SCORE_NOTIFIER) += oom_score_notifier.o

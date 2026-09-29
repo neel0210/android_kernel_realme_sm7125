@@ -45,3 +45,5 @@ obj-y     +=  oplus/oppo_healthinfo/
 #ChenYajie@BSP.SENSOR, 2020/06/16, Add for sensor info
 obj-y                     += oplus/sensor/
 #endif
+#Add for NandSwap
+obj-$(CONFIG_NANDSWAP)		+= oplus/oplus_nandswap/

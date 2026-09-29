@@ -347,7 +347,7 @@ static int __init do_name(void)
 				sys_fchown(wfd, uid, gid);
 				sys_fchmod(wfd, mode);
 				if (body_len)
-					sys_ftruncate(wfd, body_len);
+					ksys_ftruncate(wfd, body_len);
 				vcollected = kstrdup(collected, GFP_KERNEL);
 				state = CopyFile;
 			}
@@ -614,7 +614,7 @@ static int __init skip_initramfs_param(char *str)
 {
 	if (*str)
 		return 0;
-	do_skip_initramfs = !IS_ENABLED(CONFIG_INITRAMFS_IGNORE_SKIP_FLAG);
+	do_skip_initramfs = 1;
 	return 1;
 }
 __setup("skip_initramfs", skip_initramfs_param);
@@ -650,7 +650,7 @@ static int __init populate_rootfs(void)
 		printk(KERN_INFO "rootfs image is not initramfs (%s)"
 				"; looks like an initrd\n", err);
 		fd = sys_open("/initrd.image",
-			      O_WRONLY|O_CREAT, 0700);
+			      O_WRONLY|O_CREAT|O_LARGEFILE, 0700);
 		if (fd >= 0) {
 			ssize_t written = xwrite(fd, (char *)initrd_start,
 						initrd_end - initrd_start);

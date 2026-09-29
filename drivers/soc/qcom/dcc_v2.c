@@ -22,6 +22,7 @@
 #include <linux/uaccess.h>
 #include <soc/qcom/memory_dump.h>
 #include <soc/qcom/scm.h>
+#include <soc/qcom/minidump.h>
 #include <dt-bindings/soc/qcom,dcc_v2.h>
 
 #define TIMEOUT_US		(100)
@@ -197,7 +198,7 @@ static void dcc_sram_memset(const struct device *dev, void __iomem *dst,
 	}
 
 	while (count >= 4) {
-		__raw_writel(qc, dst);
+		__raw_writel_no_log(qc, dst);
 		dst += 4;
 		count -= 4;
 	}
@@ -213,7 +214,7 @@ static int dcc_sram_memcpy(void *to, const void __iomem *from,
 	}
 
 	while (count >= 4) {
-		*(unsigned int *)to = __raw_readl(from);
+		*(unsigned int *)to = __raw_readl_no_log(from);
 		to += 4;
 		from += 4;
 		count -= 4;
@@ -1790,6 +1791,7 @@ static int dcc_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct dcc_drvdata *drvdata;
 	struct resource *res;
+	struct md_region md_entry;
 
 	drvdata = devm_kzalloc(dev, sizeof(*drvdata), GFP_KERNEL);
 	if (!drvdata)
@@ -1844,6 +1846,14 @@ static int dcc_probe(struct platform_device *pdev)
 		goto err;
 
 	dcc_configure_list(drvdata, pdev->dev.of_node);
+
+	/* Add dcc info to minidump table */
+	strlcpy(md_entry.name, "KDCCDATA", sizeof(md_entry.name));
+	md_entry.virt_addr = (uintptr_t)drvdata->ram_base;
+	md_entry.phys_addr = res->start;
+	md_entry.size = drvdata->ram_size;
+	if (msm_minidump_add_region(&md_entry))
+		dev_err(drvdata->dev, "Failed to add DCC data in Minidump\n");
 
 	return 0;
 err:
@@ -1929,7 +1939,7 @@ static int dcc_v2_restore(struct device *dev)
 	data = drvdata->sram_save_state;
 
 	for (i = 0; i < drvdata->ram_size / 4; i++)
-		__raw_writel(data[i],
+		__raw_writel_no_log(data[i],
 					drvdata->ram_base + (i * 4));
 
 	state = drvdata->reg_save_state;

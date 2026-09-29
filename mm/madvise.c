@@ -184,16 +184,19 @@ success:
 	/*
 	 * vm_flags is protected by the mmap_sem held in write mode.
 	 */
-	vm_write_begin(vma);
-	WRITE_ONCE(vma->vm_flags, new_flags);
-	vm_write_end(vma);
+	vma->vm_flags = new_flags;
 out:
 	return error;
 }
 
 #ifdef CONFIG_SWAP
+#if defined(CONFIG_NANDSWAP)
+int swapin_walk_pmd_entry(pmd_t *pmd, unsigned long start,
+	unsigned long end, struct mm_walk *walk)
+#else
 static int swapin_walk_pmd_entry(pmd_t *pmd, unsigned long start,
 	unsigned long end, struct mm_walk *walk)
+#endif
 {
 
 	pte_t *orig_pte;
@@ -208,6 +211,10 @@ static int swapin_walk_pmd_entry(pmd_t *pmd, unsigned long start,
 		swp_entry_t entry;
 		struct page *page;
 		spinlock_t *ptl;
+#if defined(CONFIG_NANDSWAP)
+		if (!list_empty(&vma->vm_mm->mmap_sem.wait_list))
+			return -1;
+#endif
 		orig_pte = pte_offset_map_lock(vma->vm_mm, pmd, start, &ptl);
 		pte = *(orig_pte + ((index - start) / PAGE_SIZE));
 		pte_unmap_unlock(orig_pte, ptl);
@@ -452,11 +459,9 @@ static void madvise_free_page_range(struct mmu_gather *tlb,
 		.private = tlb,
 	};
 
-	vm_write_begin(vma);
 	tlb_start_vma(tlb, vma);
 	walk_page_range(addr, end, &free_walk);
 	tlb_end_vma(tlb, vma);
-	vm_write_end(vma);
 }
 
 static int madvise_free_single_vma(struct vm_area_struct *vma,

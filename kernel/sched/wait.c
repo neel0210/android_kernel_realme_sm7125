@@ -77,8 +77,6 @@ static int __wake_up_common(struct wait_queue_head *wq_head, unsigned int mode,
 	wait_queue_entry_t *curr, *next;
 	int cnt = 0;
 
-	lockdep_assert_held(&wq_head->lock);
-
 	if (bookmark && (bookmark->flags & WQ_FLAG_BOOKMARK)) {
 		curr = list_next_entry(bookmark, entry);
 
@@ -124,12 +122,16 @@ static void __wake_up_common_lock(struct wait_queue_head *wq_head, unsigned int 
 	bookmark.func = NULL;
 	INIT_LIST_HEAD(&bookmark.entry);
 
-	do {
+	spin_lock_irqsave(&wq_head->lock, flags);
+	nr_exclusive = __wake_up_common(wq_head, mode, nr_exclusive, wake_flags, key, &bookmark);
+	spin_unlock_irqrestore(&wq_head->lock, flags);
+
+	while (bookmark.flags & WQ_FLAG_BOOKMARK) {
 		spin_lock_irqsave(&wq_head->lock, flags);
 		nr_exclusive = __wake_up_common(wq_head, mode, nr_exclusive,
 						wake_flags, key, &bookmark);
 		spin_unlock_irqrestore(&wq_head->lock, flags);
-	} while (bookmark.flags & WQ_FLAG_BOOKMARK);
+	}
 }
 
 /**
@@ -378,7 +380,7 @@ void finish_wait(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_en
 }
 EXPORT_SYMBOL(finish_wait);
 
-int __sched autoremove_wake_function(struct wait_queue_entry *wq_entry, unsigned mode, int sync, void *key)
+int autoremove_wake_function(struct wait_queue_entry *wq_entry, unsigned mode, int sync, void *key)
 {
 	int ret = default_wake_function(wq_entry, mode, sync, key);
 
@@ -413,7 +415,7 @@ static inline bool is_kthread_should_stop(void)
  * }						smp_mb(); // C
  * remove_wait_queue(&wq_head, &wait);		wq_entry->flags |= WQ_FLAG_WOKEN;
  */
-long __sched wait_woken(struct wait_queue_entry *wq_entry, unsigned mode, long timeout)
+long wait_woken(struct wait_queue_entry *wq_entry, unsigned mode, long timeout)
 {
 	/*
 	 * The below executes an smp_mb(), which matches with the full barrier
@@ -438,7 +440,7 @@ long __sched wait_woken(struct wait_queue_entry *wq_entry, unsigned mode, long t
 }
 EXPORT_SYMBOL(wait_woken);
 
-int __sched woken_wake_function(struct wait_queue_entry *wq_entry, unsigned mode, int sync, void *key)
+int woken_wake_function(struct wait_queue_entry *wq_entry, unsigned mode, int sync, void *key)
 {
 	/* Pairs with the smp_store_mb() in wait_woken(). */
 	smp_mb(); /* C */

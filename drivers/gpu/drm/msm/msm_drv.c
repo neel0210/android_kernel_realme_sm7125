@@ -1,4 +1,7 @@
 /*
+ * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ */
+/*
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
@@ -62,7 +65,6 @@
 #define MSM_VERSION_MINOR	2
 #define MSM_VERSION_PATCHLEVEL	0
 
-static struct kmem_cache *kmem_vblank_work_pool;
 static DEFINE_MUTEX(msm_release_lock);
 
 static void msm_fb_output_poll_changed(struct drm_device *dev)
@@ -235,7 +237,7 @@ u32 msm_readl(const void __iomem *addr)
 	u32 val = readl(addr);
 
 	if (reglog)
-		pr_debug("IO:R %pK %08x\n", addr, val);
+		pr_err("IO:R %pK %08x\n", addr, val);
 	return val;
 }
 
@@ -258,7 +260,7 @@ static void vblank_ctrl_worker(struct kthread_work *work)
 	else
 		kms->funcs->disable_vblank(kms, priv->crtcs[cur_work->crtc_id]);
 
-	kmem_cache_free(kmem_vblank_work_pool, cur_work);
+	kfree(cur_work);
 }
 
 static int vblank_ctrl_queue_work(struct msm_drm_private *priv,
@@ -269,7 +271,7 @@ static int vblank_ctrl_queue_work(struct msm_drm_private *priv,
 	if (!priv || crtc_id >= priv->num_crtcs)
 		return -EINVAL;
 
-	cur_work = kmem_cache_zalloc(kmem_vblank_work_pool, GFP_ATOMIC);
+	cur_work = kzalloc(sizeof(*cur_work), GFP_ATOMIC);
 	if (!cur_work)
 		return -ENOMEM;
 
@@ -689,13 +691,13 @@ static int msm_drm_init(struct device *dev, struct drm_driver *drv)
 
 	ret = sde_power_resource_init(pdev, &priv->phandle);
 	if (ret) {
-		pr_debug("sde power resource init failed\n");
+		pr_err("sde power resource init failed\n");
 		goto power_init_fail;
 	}
 
 	priv->pclient = sde_power_client_create(&priv->phandle, "sde");
 	if (IS_ERR_OR_NULL(priv->pclient)) {
-		pr_debug("sde power client create failed\n");
+		pr_err("sde power client create failed\n");
 		ret = -EINVAL;
 		goto power_client_fail;
 	}
@@ -788,8 +790,7 @@ static int msm_drm_init(struct device *dev, struct drm_driver *drv)
 		kthread_init_worker(&priv->disp_thread[i].worker);
 		priv->disp_thread[i].dev = ddev;
 		priv->disp_thread[i].thread =
-			kthread_run_perf_critical(cpu_perf_mask,
-				kthread_worker_fn,
+			kthread_run(kthread_worker_fn,
 				&priv->disp_thread[i].worker,
 				"crtc_commit:%d", priv->disp_thread[i].crtc_id);
 		ret = sched_setscheduler(priv->disp_thread[i].thread,
@@ -808,8 +809,7 @@ static int msm_drm_init(struct device *dev, struct drm_driver *drv)
 		kthread_init_worker(&priv->event_thread[i].worker);
 		priv->event_thread[i].dev = ddev;
 		priv->event_thread[i].thread =
-			kthread_run_perf_critical(cpu_perf_mask,
-				kthread_worker_fn,
+			kthread_run(kthread_worker_fn,
 				&priv->event_thread[i].worker,
 				"crtc_event:%d", priv->event_thread[i].crtc_id);
 		/**
@@ -856,8 +856,8 @@ static int msm_drm_init(struct device *dev, struct drm_driver *drv)
 	 * other important events.
 	 */
 	kthread_init_worker(&priv->pp_event_worker);
-	priv->pp_event_thread = kthread_run_perf_critical(cpu_perf_mask,
-			kthread_worker_fn, &priv->pp_event_worker, "pp_event");
+	priv->pp_event_thread = kthread_run(kthread_worker_fn,
+			&priv->pp_event_worker, "pp_event");
 
 	ret = sched_setscheduler(priv->pp_event_thread,
 						SCHED_FIFO, &param);
@@ -921,7 +921,7 @@ static int msm_drm_init(struct device *dev, struct drm_driver *drv)
 	if (kms && kms->funcs && kms->funcs->postinit) {
 		ret = kms->funcs->postinit(kms);
 		if (ret) {
-			pr_debug("kms post init failed: %d\n", ret);
+			pr_err("kms post init failed: %d\n", ret);
 			goto fail;
 		}
 	}
@@ -946,6 +946,7 @@ mdss_init_fail:
 	kfree(priv);
 priv_alloc_fail:
 	drm_dev_unref(ddev);
+	platform_set_drvdata(pdev, NULL);
 	return ret;
 }
 
@@ -1177,7 +1178,7 @@ fail:
 		drm_modeset_backoff(&ctx);
 		goto retry;
 	} else if (rc) {
-		pr_debug("last close failed: %d\n", rc);
+		pr_err("last close failed: %d\n", rc);
 	}
 	drm_modeset_drop_locks(&ctx);
 	drm_modeset_acquire_fini(&ctx);
@@ -1810,7 +1811,7 @@ static int msm_ioctl_power_ctrl(struct drm_device *dev, void *data,
 		if (!ctx->enable_refcnt)
 			vote_req = true;
 	} else {
-		pr_debug("ignoring, unbalanced disable\n");
+		pr_err("ignoring, unbalanced disable\n");
 	}
 
 	if (vote_req) {
@@ -2289,11 +2290,21 @@ static int msm_pdev_remove(struct platform_device *pdev)
 
 static void msm_pdev_shutdown(struct platform_device *pdev)
 {
-	struct drm_device *drm = platform_get_drvdata(pdev);
-	struct msm_drm_private *priv = drm ? drm->dev_private : NULL;
+	struct drm_device *ddev = platform_get_drvdata(pdev);
+	struct msm_drm_private *priv = NULL;
 
-	if (!priv || !priv->kms)
+	if (!ddev) {
+		DRM_ERROR("invalid drm device node\n");
 		return;
+	}
+
+	priv = ddev->dev_private;
+	if (!priv) {
+		DRM_ERROR("invalid msm drm private node\n");
+		return;
+	}
+
+	msm_lastclose(ddev);
 
 	/* set this after lastclose to allow kickoff from lastclose */
 	priv->shutdown_in_progress = true;
@@ -2316,6 +2327,7 @@ static struct platform_driver msm_platform_driver = {
 		.of_match_table = dt_match,
 		.pm     = &msm_pm_ops,
 		.suppress_bind_attrs = true,
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 };
 
@@ -2335,7 +2347,6 @@ static int __init msm_drm_register(void)
 		return -EINVAL;
 
 	DBG("init");
-	kmem_vblank_work_pool = KMEM_CACHE(vblank_work, SLAB_HWCACHE_ALIGN | SLAB_PANIC);
 	msm_smmu_driver_init();
 	msm_dsi_register();
 	msm_edp_register();

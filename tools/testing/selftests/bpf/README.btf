@@ -1,0 +1,64 @@
+Kernel BTF for Android CPU accounting
+====================================
+
+The Android 16 timeInState.bpf on RMX2061 uses CO-RE relocations. The rooted
+device baseline failed in libbpf before program loading:
+  kernel BTF is missing at '/sys/kernel/btf/vmlinux'
+  Error loading vmlinux BTF: -3
+
+The default atoll configuration leaves BTF disabled because the build host
+cannot install its additional tools. CPU time-in-state accounting therefore
+remains unresolved. JMP32, GPU work-period reporting and the CPU touch-boost
+fix do not require kernel BTF and remain enabled.
+
+On a host with the prerequisites below, opt in with CONFIG_DEBUG_INFO=y,
+CONFIG_DEBUG_INFO_DWARF4=y and CONFIG_DEBUG_INFO_BTF=y. This tree already
+exports BTF through kernel/bpf/sysfs_btf.c, but its in-kernel parser used
+obsolete symbol names. Both now use the linker-defined __start_BTF and
+__stop_BTF. Type/name limits match Linux v5.10's vmlinux-sized BTF limits.
+
+Build prerequisites (Linux host):
+- pahole v1.21 or newer (usually packaged as dwarves or pahole).
+- The upstream Linux resolve_btfids host executable. Some distributions
+  ship it under /usr/lib/linux-kbuild-*/tools/bpf/resolve_btfids/.
+  Alternatively build tools/bpf/resolve_btfids in a Linux v5.10+ source tree.
+  The Makefile checks PATH, /usr/lib/linux-kbuild-*, and /usr/src/linux-headers-*.
+  For another location, supply make RESOLVE_BTFIDS=/path/to/resolve_btfids,
+  or export RESOLVE_BTFIDS=/path/to/resolve_btfids before your build script.
+  It must be a host binary, not an Android executable.
+
+This kernel's bundled tools/lib/bpf predates the resolver's dependencies;
+use the upstream tool instead of assuming an unbuilt in-tree binary exists.
+If prepare-btf reports a missing resolver, inspect the build host first:
+  cat /etc/os-release
+  find /usr/lib /usr/src -type f -name resolve_btfids -executable 2>/dev/null
+Package names vary by distribution. Installing bpftool alone does not supply
+resolve_btfids. A build with BTF disabled avoids this host dependency but
+does not fix the demonstrated CPU-accounting failure.
+The prepare step checks both tools before compiling kernel objects. To
+check manually with the same environment:
+  PAHOLE=pahole RESOLVE_BTFIDS=/path/to/resolve_btfids sh scripts/btf-tools.sh
+
+Unsupported newer BTF kinds (enum64, declaration/type tags) are disabled
+when the installed pahole exposes those options. BTF generation failures
+stop the build rather than silently producing a kernel without metadata.
+Debug information increases build disk usage and compile time. The boot
+image retains BTF; it does not retain the full DWARF sections.
+
+Host prerequisite check:
+  python3 tools/testing/selftests/bpf/test_btf_tools.py
+
+After a full kernel build and flash (including the JMP32 commit):
+  adb shell "su -c 'test -s /sys/kernel/btf/vmlinux'"
+  adb shell "su -c 'bpftool btf dump file /sys/kernel/btf/vmlinux format raw'"
+  adb shell "su -c 'find /sys/fs/bpf -iname \"*timeInState*\"'"
+  adb shell "su -c 'dmesg | grep -i timeInState'"
+
+Verify Android pins the CPU-accounting maps/programs and no longer logs a
+timeInState.bpf load failure. Missing BTF was the first demonstrated blocker;
+successful host checks do not prove all subsequent CO-RE/verifier checks pass.
+Full kernel compilation and post-flash validation are still required.
+
+References:
+https://github.com/torvalds/linux/blob/v5.10/include/uapi/linux/btf.h
+https://github.com/torvalds/linux/tree/v5.10/tools/bpf/resolve_btfids

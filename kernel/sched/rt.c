@@ -14,7 +14,7 @@
 #include "walt.h"
 
 int sched_rr_timeslice = RR_TIMESLICE;
-int sysctl_sched_rr_timeslice = (MSEC_PER_SEC / HZ) * RR_TIMESLICE;
+int sysctl_sched_rr_timeslice = (MSEC_PER_SEC * RR_TIMESLICE) / HZ;
 
 static int do_sched_rt_period_timer(struct rt_bandwidth *rt_b, int overrun);
 
@@ -1472,10 +1472,8 @@ static int find_lowest_rq(struct task_struct *task);
 /*
  * Return whether the task on the given cpu is currently non-preemptible
  * while handling a potentially long softint, or if the task is likely
- * to block preemptions soon because (a) it is a ksoftirq thread that is
- * handling slow softints, (b) it is idle and therefore likely to start
- * processing the irq's immediately, (c) the cpu is currently handling
- * hard irq's and will soon move on to the softirq handler.
+ * to block preemptions soon because it is a ksoftirq thread that is
+ * handling slow softints.
  */
 bool
 task_may_not_preempt(struct task_struct *task, int cpu)
@@ -1485,16 +1483,18 @@ task_may_not_preempt(struct task_struct *task, int cpu)
 	struct task_struct *cpu_ksoftirqd = per_cpu(ksoftirqd, cpu);
 
 	return ((softirqs & LONG_SOFTIRQ_MASK) &&
-		(task == cpu_ksoftirqd || is_idle_task(task) ||
-		 (task_thread_info(task)->preempt_count
-			& (HARDIRQ_MASK | SOFTIRQ_MASK))));
+		(task == cpu_ksoftirqd ||
+		 task_thread_info(task)->preempt_count & SOFTIRQ_MASK));
 }
-
+#if defined (CONFIG_SCHED_WALT) && defined (OPLUS_FEATURE_UIFIRST)
+extern bool is_sf(struct task_struct *p);
+extern int sysctl_slide_boost_enabled;
+#endif
 static int
 select_task_rq_rt(struct task_struct *p, int cpu, int sd_flag, int flags,
 		  int sibling_count_hint)
 {
-	struct task_struct *curr, *tgt_task;
+	struct task_struct *curr;
 	struct rq *rq;
 	bool may_not_preempt;
 
@@ -1546,18 +1546,6 @@ select_task_rq_rt(struct task_struct *p, int cpu, int sd_flag, int flags,
 	      curr->prio <= p->prio))) {
 		int target = find_lowest_rq(p);
 
-
-		/*
-		 * Check once for losing a race with the other core's irq
-		 * handler. This does not happen frequently, but it can avoid
-		 * delaying the execution of the RT task in those cases.
-		 */
-		if (target != -1) {
-			tgt_task = READ_ONCE(cpu_rq(target)->curr);
-			if (task_may_not_preempt(tgt_task, target))
-				target = find_lowest_rq(p);
-		}
-
 		/*
 		 * If cpu is non-preemptible, prefer remote cpu
 		 * even if it's running a higher-prio task.
@@ -1570,6 +1558,11 @@ select_task_rq_rt(struct task_struct *p, int cpu, int sd_flag, int flags,
 			cpu = target;
 	}
 	rcu_read_unlock();
+#if defined (CONFIG_SCHED_WALT) && defined (OPLUS_FEATURE_UIFIRST)
+	if (sysctl_slide_boost_enabled == 2 && is_sf(p) && cpu != -1) {
+		return cpu;
+	}
+#endif
 out:
 	return cpu;
 }
@@ -1643,6 +1636,8 @@ static struct sched_rt_entity *pick_next_rt_entity(struct rq *rq,
 	BUG_ON(idx >= MAX_RT_PRIO);
 
 	queue = array->queue + idx;
+	if (SCHED_WARN_ON(list_empty(queue)))
+		return NULL;
 	next = list_entry(queue->next, struct sched_rt_entity, run_list);
 
 	return next;
@@ -1656,7 +1651,8 @@ static struct task_struct *_pick_next_task_rt(struct rq *rq)
 
 	do {
 		rt_se = pick_next_rt_entity(rq, rt_rq);
-		BUG_ON(!rt_se);
+		if (unlikely(!rt_se))
+			return NULL;
 		rt_rq = group_rt_rq(rt_se);
 	} while (rt_rq);
 
@@ -2048,8 +2044,10 @@ static int push_rt_task(struct rq *rq)
 		return 0;
 
 retry:
-	if (WARN_ON(next_task == rq->curr))
+	if (unlikely(next_task == rq->curr)) {
+		WARN_ON(1);
 		return 0;
+	}
 
 	/*
 	 * It's possible that the next_task slipped in of
@@ -2640,10 +2638,6 @@ const struct sched_class rt_sched_class = {
 #ifdef CONFIG_SCHED_WALT
 	.fixup_walt_sched_stats	= fixup_walt_sched_stats_common,
 #endif
-
-#ifdef CONFIG_UCLAMP_TASK
-	.uclamp_enabled		= 1,
-#endif
 };
 
 #ifdef CONFIG_RT_GROUP_SCHED
@@ -2883,9 +2877,6 @@ static int sched_rt_global_constraints(void)
 
 static int sched_rt_global_validate(void)
 {
-	if (sysctl_sched_rt_period <= 0)
-		return -EINVAL;
-
 	if ((sysctl_sched_rt_runtime != RUNTIME_INF) &&
 		(sysctl_sched_rt_runtime > sysctl_sched_rt_period))
 		return -EINVAL;
@@ -2903,9 +2894,8 @@ static void sched_rt_do_global(void)
 	raw_spin_unlock_irqrestore(&def_rt_bandwidth.rt_runtime_lock, flags);
 }
 
-int sched_rt_handler(struct ctl_table *table, int write,
-		void __user *buffer, size_t *lenp,
-		loff_t *ppos)
+int sched_rt_handler(struct ctl_table *table, int write, void *buffer,
+		size_t *lenp, loff_t *ppos)
 {
 	int old_period, old_runtime;
 	static DEFINE_MUTEX(mutex);
@@ -2915,7 +2905,7 @@ int sched_rt_handler(struct ctl_table *table, int write,
 	old_period = sysctl_sched_rt_period;
 	old_runtime = sysctl_sched_rt_runtime;
 
-	ret = proc_dointvec(table, write, buffer, lenp, ppos);
+	ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
 
 	if (!ret && write) {
 		ret = sched_rt_global_validate();
@@ -2943,9 +2933,8 @@ undo:
 	return ret;
 }
 
-int sched_rr_handler(struct ctl_table *table, int write,
-		void __user *buffer, size_t *lenp,
-		loff_t *ppos)
+int sched_rr_handler(struct ctl_table *table, int write, void *buffer,
+		size_t *lenp, loff_t *ppos)
 {
 	int ret;
 	static DEFINE_MUTEX(mutex);
@@ -2960,6 +2949,9 @@ int sched_rr_handler(struct ctl_table *table, int write,
 		sched_rr_timeslice =
 			sysctl_sched_rr_timeslice <= 0 ? RR_TIMESLICE :
 			msecs_to_jiffies(sysctl_sched_rr_timeslice);
+
+		if (sysctl_sched_rr_timeslice <= 0)
+			sysctl_sched_rr_timeslice = jiffies_to_msecs(RR_TIMESLICE);
 	}
 	mutex_unlock(&mutex);
 	return ret;

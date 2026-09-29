@@ -176,7 +176,6 @@ extern int panic_flush_device_cache(int timeout);
 void dumpcpuregs(struct pt_regs *pt_regs);
 extern int get_download_mode(void);
 #endif
-
 void check_panic_on_warn(const char *origin)
 {
 	unsigned int limit;
@@ -210,7 +209,6 @@ void panic(const char *fmt, ...)
 /* Yong.Qian@bsp.kernel.stability, 2020/5/14, Add for dump reason */
 	char *function_name;
 #endif /*OPLUS_FEATURE_AGINGTEST*/
-	trace_kernel_panic(0);
 
 	if (panic_on_warn) {
 		/*
@@ -221,6 +219,8 @@ void panic(const char *fmt, ...)
 		 */
 		panic_on_warn = 0;
 	}
+
+	trace_kernel_panic(0);
 
 	/*
 	 * Disable local interrupts. This will prevent panic_smp_self_stop
@@ -689,7 +689,7 @@ EXPORT_SYMBOL(warn_slowpath_null);
  */
 __visible void __stack_chk_fail(void)
 {
-	panic("stack-protector: Kernel stack is corrupted in: %p\n",
+	panic("stack-protector: Kernel stack is corrupted in: %pB\n",
 		__builtin_return_address(0));
 }
 EXPORT_SYMBOL(__stack_chk_fail);

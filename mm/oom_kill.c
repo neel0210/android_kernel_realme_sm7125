@@ -176,8 +176,7 @@ static bool oom_unkillable_task(struct task_struct *p,
  * task consuming the most memory to avoid subsequent oom failures.
  */
 unsigned long oom_badness(struct task_struct *p, struct mem_cgroup *memcg,
-			  const nodemask_t *nodemask, unsigned long totalpages,
-			  bool only_positive_adj)
+			  const nodemask_t *nodemask, unsigned long totalpages)
 {
 	long points;
 	long adj;
@@ -196,7 +195,6 @@ unsigned long oom_badness(struct task_struct *p, struct mem_cgroup *memcg,
 	 */
 	adj = (long)p->signal->oom_score_adj;
 	if (adj == OOM_SCORE_ADJ_MIN ||
-			(only_positive_adj && adj < 0) ||
 			test_bit(MMF_OOM_SKIP, &p->mm->flags) ||
 			in_vfork(p)) {
 		task_unlock(p);
@@ -208,7 +206,7 @@ unsigned long oom_badness(struct task_struct *p, struct mem_cgroup *memcg,
 	 * task's rss, pagetable and swap space use.
 	 */
 	points = get_mm_rss(p->mm) + get_mm_counter(p->mm, MM_SWAPENTS) +
-		atomic_long_read(&p->mm->nr_ptes) + mm_nr_pmds(p->mm);
+		mm_pgtables_bytes(p->mm) / PAGE_SIZE;
 	task_unlock(p);
 
 	/* Normalize to oom_score_adj units */
@@ -318,8 +316,7 @@ static int oom_evaluate_task(struct task_struct *task, void *arg)
 		goto select;
 	}
 
-	points = oom_badness(task, NULL, oc->nodemask, oc->totalpages,
-				oc->only_positive_adj);
+	points = oom_badness(task, NULL, oc->nodemask, oc->totalpages);
 	if (!points || points < oc->chosen_points)
 		goto next;
 
@@ -370,15 +367,15 @@ static void select_bad_process(struct oom_control *oc)
  * Dumps the current memory state of all eligible tasks.  Tasks not in the same
  * memcg, not in the same cpuset, or bound to a disjoint set of mempolicy nodes
  * are not shown.
- * State information includes task's pid, uid, tgid, vm size, rss, nr_ptes,
- * swapents, oom_score_adj value, and name.
+ * State information includes task's pid, uid, tgid, vm size, rss,
+ * pgtables_bytes, swapents, oom_score_adj value, and name.
  */
 void dump_tasks(struct mem_cgroup *memcg, const nodemask_t *nodemask)
 {
 	struct task_struct *p;
 	struct task_struct *task;
 
-	pr_info("[ pid ]   uid  tgid total_vm      rss nr_ptes nr_pmds swapents oom_score_adj name\n");
+	pr_info("[ pid ]   uid  tgid total_vm      rss pgtables_bytes swapents oom_score_adj name\n");
 	rcu_read_lock();
 	for_each_process(p) {
 		if (oom_unkillable_task(p, memcg, nodemask))
@@ -394,11 +391,10 @@ void dump_tasks(struct mem_cgroup *memcg, const nodemask_t *nodemask)
 			continue;
 		}
 
-		pr_info("[%5d] %5d %5d %8lu %8lu %7ld %7ld %8lu         %5hd %s\n",
+		pr_info("[%5d] %5d %5d %8lu %8lu %8ld %8lu         %5hd %s\n",
 			task->pid, from_kuid(&init_user_ns, task_uid(task)),
 			task->tgid, task->mm->total_vm, get_mm_rss(task->mm),
-			atomic_long_read(&task->mm->nr_ptes),
-			mm_nr_pmds(task->mm),
+			mm_pgtables_bytes(task->mm),
 			get_mm_counter(task->mm, MM_SWAPENTS),
 			task->signal->oom_score_adj, task->comm);
 		task_unlock(task);
@@ -708,9 +704,7 @@ void exit_oom_victim(void)
 void oom_killer_enable(void)
 {
 	oom_killer_disabled = false;
-#ifdef CONFIG_DEBUG_KERNEL
-	pr_debug("OOM killer enabled.\n");
-#endif
+	pr_info("OOM killer enabled.\n");
 }
 
 /**
@@ -747,9 +741,8 @@ bool oom_killer_disable(signed long timeout)
 		oom_killer_enable();
 		return false;
 	}
-#ifdef CONFIG_DEBUG_KERNEL
-	pr_debug("OOM killer disabled.\n");
-#endif
+	pr_info("OOM killer disabled.\n");
+
 	return true;
 }
 
@@ -886,8 +879,7 @@ static void oom_kill_process(struct oom_control *oc, const char *message)
 			 * oom_badness() returns 0 if the thread is unkillable
 			 */
 			child_points = oom_badness(child,
-				oc->memcg, oc->nodemask, oc->totalpages,
-				oc->only_positive_adj);
+				oc->memcg, oc->nodemask, oc->totalpages);
 			if (child_points > victim_points) {
 				put_task_struct(victim);
 				victim = child;

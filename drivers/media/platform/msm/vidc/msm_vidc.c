@@ -608,9 +608,13 @@ int msm_vidc_dqbuf(void *instance, struct v4l2_buffer *b)
 	tag_data.index = b->index;
 	tag_data.type = b->type;
 
-	msm_comm_fetch_tags(inst, &tag_data);
-	b->m.planes[0].reserved[5] = tag_data.input_tag;
-	b->m.planes[0].reserved[6] = tag_data.output_tag;
+	if (msm_comm_fetch_tags(inst, &tag_data)) {
+		b->m.planes[0].reserved[5] = tag_data.input_tag;
+		b->m.planes[0].reserved[6] = tag_data.output_tag;
+	} else {
+		b->m.planes[0].reserved[5] = 0;
+		b->m.planes[0].reserved[6] = 0;
+	}
 
 	return rc;
 }
@@ -1903,6 +1907,8 @@ void *msm_vidc_open(int core_id, int session_type)
 		goto err_invalid_core;
 	}
 
+	pr_info(VIDC_DBG_TAG "Opening video instance: %pK, %d\n",
+		"info", inst, session_type);
 	mutex_init(&inst->sync_lock);
 	mutex_init(&inst->bufq[CAPTURE_PORT].lock);
 	mutex_init(&inst->bufq[OUTPUT_PORT].lock);
@@ -2187,6 +2193,8 @@ int msm_vidc_destroy(struct msm_vidc_inst *inst)
 
 	msm_vidc_debugfs_deinit_inst(inst);
 
+	pr_info(VIDC_DBG_TAG "Closed video instance: %pK\n",
+			"info", inst);
 	kfree(inst);
 	return 0;
 }

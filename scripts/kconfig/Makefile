@@ -117,7 +117,7 @@ configfiles=$(wildcard $(srctree)/kernel/configs/$@ $(srctree)/arch/$(SRCARCH)/c
 %.config: $(obj)/conf
 	$(if $(call configfiles),, $(error No configuration exists for this target on this architecture))
 	$(Q)$(CONFIG_SHELL) $(srctree)/scripts/kconfig/merge_config.sh -m .config $(configfiles)
-	+$(Q)yes "" | $(MAKE) -f $(srctree)/Makefile oldconfig
+	$(Q)$(MAKE) -f $(srctree)/Makefile olddefconfig
 
 PHONY += kvmconfig
 kvmconfig: kvm_guest.config
@@ -191,9 +191,8 @@ gconf-objs	:= gconf.o zconf.tab.o
 
 hostprogs-y := conf nconf mconf kxgettext qconf gconf
 
-targets		+= zconf.lex.c
 clean-files	:= qconf.moc .tmp_qtcheck .tmp_gtkcheck
-clean-files	+= gconf.glade.h
+clean-files	+= zconf.tab.c zconf.lex.c gconf.glade.h
 clean-files     += config.pot linux.pot
 
 # Check that we have the required ncurses stuff installed for lxdialog (menuconfig)
@@ -208,8 +207,8 @@ always := dochecklxdialog
 HOST_EXTRACFLAGS += $(shell $(CONFIG_SHELL) $(srctree)/$(src)/check.sh $(HOSTCC) $(HOSTCFLAGS))
 
 # generated files seem to need this to find local include files
-HOSTCFLAGS_zconf.lex.o	:= -I$(src)
-HOSTCFLAGS_zconf.tab.o	:= -I$(src)
+HOSTCFLAGS_zconf.lex.o	:= -I $(srctree)/$(src)
+HOSTCFLAGS_zconf.tab.o	:= -I $(srctree)/$(src)
 
 LEX_PREFIX_zconf	:= zconf
 YACC_PREFIX_zconf	:= zconf

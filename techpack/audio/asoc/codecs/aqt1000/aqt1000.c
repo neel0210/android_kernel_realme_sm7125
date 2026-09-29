@@ -569,29 +569,29 @@ static const struct snd_kcontrol_new aqt_snd_controls[] = {
 	SOC_SINGLE_TLV("AQT ADC3 Volume", AQT1000_ANA_AMIC3, 0, 20, 0,
 			analog_gain),
 
-	SOC_SINGLE_SX_TLV("AQT RX1 Digital Volume", AQT1000_CDC_RX1_RX_VOL_CTL,
-		0, -84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("AQT RX2 Digital Volume", AQT1000_CDC_RX2_RX_VOL_CTL,
-		0, -84, 40, digital_gain),
-
-	SOC_SINGLE_SX_TLV("AQT DEC0 Volume", AQT1000_CDC_TX0_TX_VOL_CTL, 0,
+	SOC_SINGLE_S8_TLV("AQT RX1 Digital Volume", AQT1000_CDC_RX1_RX_VOL_CTL,
 		-84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("AQT DEC1 Volume", AQT1000_CDC_TX1_TX_VOL_CTL, 0,
-		-84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("AQT DEC2 Volume", AQT1000_CDC_TX2_TX_VOL_CTL, 0,
+	SOC_SINGLE_S8_TLV("AQT RX2 Digital Volume", AQT1000_CDC_RX2_RX_VOL_CTL,
 		-84, 40, digital_gain),
 
-	SOC_SINGLE_SX_TLV("AQT IIR0 INP0 Volume",
-		AQT1000_CDC_SIDETONE_IIR0_IIR_GAIN_B1_CTL, 0, -84, 40,
+	SOC_SINGLE_S8_TLV("AQT DEC0 Volume", AQT1000_CDC_TX0_TX_VOL_CTL,
+		-84, 40, digital_gain),
+	SOC_SINGLE_S8_TLV("AQT DEC1 Volume", AQT1000_CDC_TX1_TX_VOL_CTL,
+		-84, 40, digital_gain),
+	SOC_SINGLE_S8_TLV("AQT DEC2 Volume", AQT1000_CDC_TX2_TX_VOL_CTL,
+		-84, 40, digital_gain),
+
+	SOC_SINGLE_S8_TLV("AQT IIR0 INP0 Volume",
+		AQT1000_CDC_SIDETONE_IIR0_IIR_GAIN_B1_CTL, -84, 40,
 		digital_gain),
-	SOC_SINGLE_SX_TLV("AQT IIR0 INP1 Volume",
-		AQT1000_CDC_SIDETONE_IIR0_IIR_GAIN_B2_CTL, 0, -84, 40,
+	SOC_SINGLE_S8_TLV("AQT IIR0 INP1 Volume",
+		AQT1000_CDC_SIDETONE_IIR0_IIR_GAIN_B2_CTL, -84, 40,
 		digital_gain),
-	SOC_SINGLE_SX_TLV("AQT IIR0 INP2 Volume",
-		AQT1000_CDC_SIDETONE_IIR0_IIR_GAIN_B3_CTL, 0, -84, 40,
+	SOC_SINGLE_S8_TLV("AQT IIR0 INP2 Volume",
+		AQT1000_CDC_SIDETONE_IIR0_IIR_GAIN_B3_CTL, -84, 40,
 		digital_gain),
-	SOC_SINGLE_SX_TLV("AQT IIR0 INP3 Volume",
-		AQT1000_CDC_SIDETONE_IIR0_IIR_GAIN_B4_CTL, 0, -84, 40,
+	SOC_SINGLE_S8_TLV("AQT IIR0 INP3 Volume",
+		AQT1000_CDC_SIDETONE_IIR0_IIR_GAIN_B4_CTL, -84, 40,
 		digital_gain),
 	SOC_SINGLE_EXT("AQT ANC Slot", SND_SOC_NOPM, 0, 100, 0,
 			aqt_get_anc_slot, aqt_put_anc_slot),
@@ -1181,12 +1181,11 @@ static int aqt_codec_enable_dec(struct snd_soc_dapm_widget *w,
 			snd_soc_update_bits(codec, hpf_gate_reg, 0x02, 0x00);
 		}
 		/* schedule work queue to Remove Mute */
-		queue_delayed_work(system_power_efficient_wq, 
-					&aqt->tx_mute_dwork[decimator].dwork,
-					msecs_to_jiffies(tx_unmute_delay));
+		schedule_delayed_work(&aqt->tx_mute_dwork[decimator].dwork,
+				      msecs_to_jiffies(tx_unmute_delay));
 		if (aqt->tx_hpf_work[decimator].hpf_cut_off_freq !=
 							CF_MIN_3DB_150HZ)
-			queue_delayed_work(system_power_efficient_wq, 
+			schedule_delayed_work(
 					&aqt->tx_hpf_work[decimator].dwork,
 					msecs_to_jiffies(300));
 		/* apply gain after decimator is enabled */

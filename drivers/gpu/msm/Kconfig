@@ -9,6 +9,7 @@ config QCOM_KGSL
 	select DEVFREQ_GOV_PERFORMANCE
 	select DEVFREQ_GOV_QCOM_ADRENO_TZ
 	select DEVFREQ_GOV_QCOM_GPUBW_MON
+	select TRACE_GPU_MEM
 	---help---
 	  3D graphics driver for the Adreno family of GPUs from QTI.
 	  Required to use hardware accelerated OpenGL, compute and Vulkan
@@ -25,12 +26,6 @@ config QCOM_KGSL_IOMMU
 	bool
 	default y if QCOM_KGSL && (MSM_IOMMU || ARM_SMMU)
 
-config QCOM_KGSL_IOCOHERENCY_DEFAULT
-	bool "Enable I/O coherency on cached GPU memory by default"
-	depends on QCOM_KGSL
-	default y
-	help
-	 Say 'Y' here to enable I/O cache coherency by default on targets that
-	 support hardware I/O coherency. If enabled all cached GPU memory
-	 will use I/O coherency regardless of the user flags. If not enabled
-	 the user can still selectively enable I/O coherency with a flag.
+config CORESIGHT_ADRENO
+	bool
+	default y if QCOM_KGSL=y && CORESIGHT=y

@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0
 VERSION = 4
 PATCHLEVEL = 14
-SUBLEVEL = 336
-EXTRAVERSION =
+SUBLEVEL = 357
+EXTRAVERSION = -openela
 NAME = Petit Gorille
 
 # *DOCUMENTATION*
@@ -35,7 +35,7 @@ unexport GREP_OPTIONS
 # Most importantly: sub-Makefiles should only ever modify files in
 # their own directory. If in some directory we have a dependency on
 # a file in another dir (which doesn't happen often, but it's often
-# unavoidable when linking the built-in.o targets which finally
+# unavoidable when linking the built-in.a targets which finally
 # turn into vmlinux), we will call a sub make in that other dir, and
 # after that we are sure that everything which is in that other dir
 # is now up to date.
@@ -318,7 +318,6 @@ SUBARCH := $(shell uname -m | sed -e s/i.86/x86/ -e s/x86_64/x86/ \
 # Default value for CROSS_COMPILE is not to prefix executables
 # Note: Some architectures assign CROSS_COMPILE in their arch/*/Makefile
 ARCH		:= arm64
-CCACHE      ?=ccache
 CROSS_COMPILE	?= $(CONFIG_CROSS_COMPILE:"%"=%)
 
 # Architecture as present in compile.h
@@ -370,64 +369,58 @@ HOST_LFS_LDFLAGS := $(shell getconf LFS_LDFLAGS 2>/dev/null)
 HOST_LFS_LIBS := $(shell getconf LFS_LIBS 2>/dev/null)
 
 ifneq ($(LLVM),)
-HOSTCC	= $(CCACHE) clang
-HOSTCXX	= $(CCACHE) clang++
+HOSTCC	= clang
+HOSTCXX	= clang++
 else
-HOSTCC	= $(CCACHE) gcc
-HOSTCXX	= $(CCACHE) g++
+HOSTCC	= gcc
+HOSTCXX	= g++
 endif
 HOSTCFLAGS   := -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 \
-		-fomit-frame-pointer -std=gnu89 -pipe $(HOST_LFS_CFLAGS)
+		-fomit-frame-pointer -std=gnu89 $(HOST_LFS_CFLAGS) -B/usr/bin
 HOSTCXXFLAGS := -O2 $(HOST_LFS_CFLAGS)
-HOSTLDFLAGS  := $(HOST_LFS_LDFLAGS)
+HOSTLDFLAGS  := $(HOST_LFS_LDFLAGS) -B/usr/bin
 HOST_LOADLIBES := $(HOST_LFS_LIBS)
 
 ifeq ($(shell $(HOSTCC) -v 2>&1 | grep -c "clang version"), 1)
 HOSTCFLAGS  += -Wno-unused-value -Wno-unused-parameter \
 		-Wno-missing-field-initializers
 endif
-HOSTCFLAGS   += -B/usr/bin
-HOSTLDFLAGS  += -B/usr/bin
-KBUILD_HOSTCFLAGS   := -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 \
-		-fomit-frame-pointer -std=gnu89 -pipe $(HOST_LFS_CFLAGS) \
-		$(HOSTCFLAGS)
-KBUILD_HOSTCXXFLAGS := -O2 $(HOST_LFS_CFLAGS) $(HOSTCXXFLAGS)
-KBUILD_HOSTLDFLAGS  := $(HOST_LFS_LDFLAGS) $(HOSTLDFLAGS)
-KBUILD_HOSTLDLIBS   := $(HOST_LFS_LIBS) $(HOSTLDLIBS)
 
 # Make variables (CC, etc...)
 CPP		= $(CC) -E
 ifneq ($(LLVM),)
-REAL_CC		= $(CCACHE) clang
-LD		= $(CCACHE) ld.lld
-AR		= $(CCACHE) llvm-ar
-NM		= $(CCACHE) llvm-nm
-OBJCOPY		= $(CCACHE) llvm-objcopy
-OBJDUMP		= $(CCACHE) llvm-objdump
-READELF		= $(CCACHE) llvm-readelf
-STRIP		= $(CCACHE) llvm-strip
+CC		= clang
+LD		= ld.lld
+AR		= llvm-ar
+NM		= llvm-nm
+OBJCOPY		= llvm-objcopy
+OBJDUMP		= llvm-objdump
+READELF		= llvm-readelf
+STRIP		= llvm-strip
 else
-REAL_CC		= $(CCACHE) $(CROSS_COMPILE)gcc
-LD		= $(CCACHE) $(CROSS_COMPILE)ld
-LDGOLD		= $(CCACHE) $(CROSS_COMPILE)ld.gold
-AR		= $(CCACHE) $(CROSS_COMPILE)ar
-NM		= $(CCACHE) $(CROSS_COMPILE)nm
-OBJCOPY		= $(CCACHE) $(CROSS_COMPILE)objcopy
-OBJDUMP		= $(CCACHE) $(CROSS_COMPILE)objdump
-READELF		= $(CCACHE) $(CROSS_COMPILE)readelf
-STRIP		= $(CCACHE) $(CROSS_COMPILE)strip
+CC		= $(CROSS_COMPILE)gcc
+LD		= $(CROSS_COMPILE)ld
+LDGOLD		= $(CROSS_COMPILE)ld.gold
+AR		= $(CROSS_COMPILE)ar
+NM		= $(CROSS_COMPILE)nm
+OBJCOPY		= $(CROSS_COMPILE)objcopy
+OBJDUMP		= $(CROSS_COMPILE)objdump
+READELF		= $(CROSS_COMPILE)readelf
+STRIP		= $(CROSS_COMPILE)strip
 endif
+PAHOLE		= pahole
+# Distribution kbuild/header packages often install this outside PATH.
+# An explicit environment or make-command-line override still takes priority.
+RESOLVE_BTFIDS	?= $(or $(shell command -v resolve_btfids 2>/dev/null),$(firstword \
+	$(wildcard /usr/lib/linux-kbuild-*/tools/bpf/resolve_btfids/resolve_btfids \
+	/usr/src/linux-headers-*/tools/bpf/resolve_btfids/resolve_btfids)),resolve_btfids)
 AWK		= awk
 GENKSYMS	= scripts/genksyms/genksyms
 INSTALLKERNEL  := installkernel
 DEPMOD		= depmod
 PERL		= perl
-PYTHON		?= $(shell command -v python3 2>/dev/null || command -v python 2>/dev/null || echo python)
+PYTHON		?= $(shell command -v python3 || command -v python)
 CHECK		= sparse
-
-# Use the wrapper for the compiler.  This wrapper scans for new
-# warnings and causes the build to stop upon encountering them
-CC		= $(PYTHON) $(srctree)/scripts/gcc-wrapper.py $(REAL_CC)
 
 CHECKFLAGS     := -D__linux__ -Dlinux -D__STDC__ -Dunix -D__unix__ \
 		  -Wbitwise -Wno-return-void $(CF)
@@ -458,11 +451,10 @@ LINUXINCLUDE    := \
 
 KBUILD_AFLAGS   := -D__ASSEMBLY__
 KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
-		   -fno-strict-aliasing -fno-common -fshort-wchar -pipe \
+		   -fno-strict-aliasing -fno-common -fshort-wchar \
 		   -Werror-implicit-function-declaration \
 		   -Wno-format-security \
-		   -std=gnu89 -pipe
-		   
+		   -std=gnu89
 ifeq ($(TARGET_BOARD_TYPE),auto)
 KBUILD_CFLAGS    += -DCONFIG_PLATFORM_AUTO
 endif
@@ -471,18 +463,6 @@ ifeq ($(CONFIG_EARLY_INIT),true)
 KBUILD_CFLAGS    += -DCONFIG_EARLY_SERVICES
 endif
 
-# Enable Clang Polly optimizations
-KBUILD_CFLAGS	+= -mllvm -polly \
-		   -mllvm -polly-run-dce \
-		   -mllvm -polly-run-inliner \
-		   -mllvm -polly-opt-fusion=max \
-		   -mllvm -polly-ast-use-context \
-		   -mllvm -polly-detect-keep-going \
-		   -mllvm -polly-vectorizer=stripmine \
-		   -mllvm -polly-invariant-load-hoisting
-
-KBUILD_CFLAGS    += -Werror=vla
-
 KBUILD_CPPFLAGS := -D__KERNEL__
 KBUILD_AFLAGS_KERNEL :=
 KBUILD_CFLAGS_KERNEL :=
@@ -490,10 +470,9 @@ KBUILD_AFLAGS_MODULE  := -DMODULE
 KBUILD_CFLAGS_MODULE  := -DMODULE
 KBUILD_LDFLAGS_MODULE := -T $(srctree)/scripts/module-common.lds
 LDFLAGS :=
-VENDOR_EDIT := 1
 GCC_PLUGINS_CFLAGS :=
-CLANG_FLAGS :=
-TARGET_BUILD_VARIANT := user
+CLANG_FLAGS :=	
+
 
 #ifdef OPLUS_FEATURE_BUILD
 #Sunliang@TECH.SysTech.Build.BaseConfig, 2020/03/18, oplus customzation for flags or other variabls
@@ -517,7 +496,7 @@ KBUILD_CPPFLAGS += -DCONFIG_HIGH_TEMP_VERSION
 endif
 #endif OPLUS_FEATURE_CHG_BASIC
 export ARCH SRCARCH CONFIG_SHELL HOSTCC HOSTCFLAGS CROSS_COMPILE LD CC
-export CPP AR NM STRIP OBJCOPY OBJDUMP READELF HOSTLDFLAGS HOST_LOADLIBES
+export CPP AR NM STRIP OBJCOPY OBJDUMP PAHOLE RESOLVE_BTFIDS READELF HOSTLDFLAGS HOST_LOADLIBES
 export MAKE AWK GENKSYMS INSTALLKERNEL PERL PYTHON UTS_MACHINE
 export HOSTCXX HOSTCXXFLAGS LDFLAGS_MODULE CHECK CHECKFLAGS
 
@@ -528,8 +507,7 @@ export KBUILD_AFLAGS AFLAGS_KERNEL AFLAGS_MODULE
 export KBUILD_AFLAGS_MODULE KBUILD_CFLAGS_MODULE KBUILD_LDFLAGS_MODULE
 export KBUILD_AFLAGS_KERNEL KBUILD_CFLAGS_KERNEL
 export KBUILD_ARFLAGS
-export VENDOR_EDIT
-export TARGET_BUILD_VARIANT
+
 # When compiling out-of-tree modules, put MODVERDIR in the module
 # tree rather than in the kernel tree. The kernel tree might
 # even be read-only.
@@ -567,38 +545,42 @@ ifneq ($(KBUILD_SRC),)
 endif
 
 ifeq ($(cc-name),clang)
-ifdef CONFIG_POLLY_CLANG
-KBUILD_CFLAGS += -mllvm -polly \
-                   -mllvm -polly-run-dce \
-                   -mllvm -polly-detect-keep-going \
-		   -mllvm -polly-run-inliner \
-		   -mllvm -polly-opt-fusion=max \
-		   -mllvm -polly-ast-use-context \
-		   -mllvm -polly-vectorizer=stripmine \
-		   -mllvm -polly-invariant-load-hoisting
-endif
-ifneq ($(CROSS_COMPILE),)
+# Individual arch/{arch}/Makefiles should use -EL/-EB to set intended
+# endianness and -m32/-m64 to set word size based on Kconfigs instead of
+# relying on the target triple.
+CLANG_TARGET_FLAGS_arm		:= arm-linux-gnueabi
+CLANG_TARGET_FLAGS_arm64	:= aarch64-linux-gnu
+CLANG_TARGET_FLAGS_hexagon	:= hexagon-linux-musl
+CLANG_TARGET_FLAGS_m68k		:= m68k-linux-gnu
+CLANG_TARGET_FLAGS_mips		:= mipsel-linux-gnu
+CLANG_TARGET_FLAGS_powerpc	:= powerpc64le-linux-gnu
+CLANG_TARGET_FLAGS_riscv	:= riscv64-linux-gnu
+CLANG_TARGET_FLAGS_s390		:= s390x-linux-gnu
+CLANG_TARGET_FLAGS_x86		:= x86_64-linux-gnu
+CLANG_TARGET_FLAGS		:= $(CLANG_TARGET_FLAGS_$(SRCARCH))
+
+ifeq ($(CROSS_COMPILE),)
+ifeq ($(CLANG_TARGET_FLAGS),)
+$(error Specify CROSS_COMPILE or add '--target=' option to Makefile)
+else
+CLANG_FLAGS	+= --target=$(CLANG_TARGET_FLAGS)
+endif # CLANG_TARGET_FLAGS
+else
 CLANG_TRIPLE	?= $(CROSS_COMPILE)
 CLANG_FLAGS	+= --target=$(notdir $(CLANG_TRIPLE:%-=%))
-ifeq ($(shell $(srctree)/scripts/clang-android.sh $(CC) $(CLANG_FLAGS)), y)
-$(error "Clang with Android --target detected. Did you specify CLANG_TRIPLE?")
-endif
+endif # CROSS_COMPILE
+
+ifeq ($(LLVM_IAS),0)
+CLANG_FLAGS	+= -no-integrated-as
 GCC_TOOLCHAIN_DIR := $(dir $(shell which $(CROSS_COMPILE)elfedit))
 CLANG_FLAGS	+= --prefix=$(GCC_TOOLCHAIN_DIR)$(notdir $(CROSS_COMPILE))
-GCC_TOOLCHAIN	:= $(realpath $(GCC_TOOLCHAIN_DIR)/..)
-endif
-ifneq ($(GCC_TOOLCHAIN),)
-CLANG_FLAGS	+= --gcc-toolchain=$(GCC_TOOLCHAIN)
-endif
-ifneq ($(LLVM_IAS),1)
-CLANG_FLAGS	+= -no-integrated-as
 endif
 CLANG_FLAGS	+= -Werror=unknown-warning-option
 CLANG_FLAGS	+= $(call cc-option, -Wno-misleading-indentation)
 CLANG_FLAGS	+= $(call cc-option, -Wno-bool-operation)
 CLANG_FLAGS	+= $(call cc-option, -Wno-unsequenced)
 KBUILD_CFLAGS	+= $(CLANG_FLAGS)
-KBUILD_AFLAGS	+= $(CLANG_FLAGS) -no-integrated-as
+KBUILD_AFLAGS	+= $(CLANG_FLAGS)
 export CLANG_FLAGS
 ifeq ($(ld-name),lld)
 KBUILD_CFLAGS += -fuse-ld=lld
@@ -614,6 +596,11 @@ RETPOLINE_CFLAGS := $(call cc-option,$(RETPOLINE_CFLAGS_GCC),$(call cc-option,$(
 RETPOLINE_VDSO_CFLAGS := $(call cc-option,$(RETPOLINE_VDSO_CFLAGS_GCC),$(call cc-option,$(RETPOLINE_VDSO_CFLAGS_CLANG)))
 export RETPOLINE_CFLAGS
 export RETPOLINE_VDSO_CFLAGS
+
+ifeq ($(call shell-cached,$(CONFIG_SHELL) $(srctree)/scripts/cc-can-link.sh $(CC)), y)
+  CC_CAN_LINK := y
+  export CC_CAN_LINK
+endif
 
 ifeq ($(config-targets),1)
 # ===========================================================================
@@ -763,32 +750,11 @@ LDFINAL_vmlinux := $(LD)
 LD		:= $(LDGOLD)
 LDFLAGS		+= -plugin LLVMgold.so
 endif
-
 # use llvm-ar for building symbol tables from IR files, and llvm-dis instead
 # of objdump for processing symbol versions and exports
-ifneq ($(findstring llvm-ar,$(AR)),)
-LLVM_AR		:= $(AR)
-else
 LLVM_AR		:= llvm-ar
-endif
-
-ifneq ($(findstring llvm-nm,$(NM)),)
-LLVM_NM		:= $(NM)
-else
 LLVM_NM		:= llvm-nm
-endif
-
 export LLVM_AR LLVM_NM
-
-# Set O3 optimization level for LTO
-LDFLAGS		+= --plugin-opt=O3
-
-endif
-
-# According gcc docs when using computed gotos, disabling
-# gcse could result in better runtime performing
-ifneq ($(cc-name),clang)
-KBUILD_CFLAGS   += -fno-gcse
 endif
 
 # The arch Makefile can set ARCH_{CPP,A,C}FLAGS to override the default
@@ -810,26 +776,13 @@ ifdef CONFIG_CC_OPTIMIZE_FOR_SIZE
 KBUILD_CFLAGS   += -Os
 else
 KBUILD_CFLAGS   += -O3
+endif
 ifeq ($(cc-name),gcc)
 KBUILD_CFLAGS	+= -mcpu=cortex-a76.cortex-a55 -mtune=cortex-a76.cortex-a55
 endif
 ifeq ($(cc-name),clang)
 KBUILD_CFLAGS	+= -mcpu=cortex-a55 -mtune=cortex-a55
 endif
-endif
-
-KBUILD_CFLAGS += $(call cc-ifversion, -gt, 0900, \
-			$(call cc-option, -Wno-psabi) \
-			$(call cc-disable-warning,maybe-uninitialized,) \
-			$(call cc-disable-warning,format,) \
-			$(call cc-disable-warning,array-bounds,) \
-			$(call cc-disable-warning,stringop-overflow,))
-
-KBUILD_CFLAGS += $(call cc-ifversion, -lt, 0409, \
-			$(call cc-disable-warning,maybe-uninitialized,))
-
-# Tell compiler to use pipes instead of temporary files during compilation
-KBUILD_CFLAGS += $(call cc-option, -pipe)
 
 # Tell gcc to never replace conditional load with a non-conditional one
 KBUILD_CFLAGS	+= $(call cc-option,--param=allow-store-data-races=0)
@@ -888,7 +841,6 @@ KBUILD_CFLAGS += $(call cc-option, -Wno-undefined-optimized)
 KBUILD_CFLAGS += $(call cc-option, -Wno-tautological-constant-out-of-range-compare)
 KBUILD_CFLAGS += $(call cc-option, -mllvm -disable-struct-const-merge)
 KBUILD_CFLAGS += $(call cc-option, -Wno-sometimes-uninitialized)
-KBUILD_CFLAGS += $(call cc-disable-warning, void-pointer-to-enum-cast)
 
 # Quiet clang warning: comparison of unsigned expression < 0 is always false
 
@@ -906,7 +858,7 @@ KBUILD_CFLAGS += $(call cc-option,-fno-delete-null-pointer-checks,)
 KBUILD_CFLAGS += $(call cc-disable-warning, unused-but-set-variable)
 
 ifeq ($(ld-name),lld)
-LDFLAGS += -O3 --lto-O3
+LDFLAGS += -O2
 endif
 
 KBUILD_CFLAGS += $(call cc-disable-warning, unused-const-variable)
@@ -926,10 +878,18 @@ ifndef CONFIG_FUNCTION_TRACER
 KBUILD_CFLAGS	+= -fomit-frame-pointer
 endif
 endif
-
-# Initialize all stack variables with a pattern, if desired.
-ifdef CONFIG_INIT_STACK_ALL
+# Initialize all stack variables with a 0xAA pattern.
+ifdef CONFIG_INIT_STACK_ALL_PATTERN
 KBUILD_CFLAGS	+= -ftrivial-auto-var-init=pattern
+endif
+
+# Initialize all stack variables with a zero value.
+ifdef CONFIG_INIT_STACK_ALL_ZERO
+# Future support for zero initialization is still being debated, see
+# https://bugs.llvm.org/show_bug.cgi?id=45497. These flags are subject to being
+# renamed or dropped.
+KBUILD_CFLAGS  += -ftrivial-auto-var-init=zero
+KBUILD_CFLAGS  += $(call cc-option, -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang)
 endif
 
 KBUILD_CFLAGS   += $(call cc-option, -fno-var-tracking-assignments)
@@ -1024,7 +984,8 @@ export LDFINAL_vmlinux LDFLAGS_FINAL_vmlinux
 endif
 
 ifdef CONFIG_CFI_CLANG
-cfi-clang-flags	+= -fsanitize=cfi -fno-sanitize-cfi-canonical-jump-tables
+cfi-clang-flags	+= -fsanitize=cfi -fno-sanitize-cfi-canonical-jump-tables \
+		   -fno-sanitize-blacklist
 DISABLE_CFI_CLANG := -fno-sanitize=cfi
 ifdef CONFIG_MODULES
 cfi-clang-flags	+= -fsanitize-cfi-cross-dso
@@ -1094,6 +1055,9 @@ KBUILD_CFLAGS	+= $(call cc-option,-fmerge-constants)
 
 # Make sure -fstack-check isn't enabled (like gentoo apparently did)
 KBUILD_CFLAGS  += $(call cc-option,-fno-stack-check,)
+
+# conserve stack if available
+KBUILD_CFLAGS   += $(call cc-option,-fconserve-stack)
 
 # disallow errors like 'EXPORT_GPL(foo);' with missing header
 KBUILD_CFLAGS   += $(call cc-option,-Werror=implicit-int)
@@ -1253,13 +1217,13 @@ vmlinux-dirs	:= $(patsubst %/,%,$(filter %/, $(init-y) $(init-m) \
 vmlinux-alldirs	:= $(sort $(vmlinux-dirs) $(patsubst %/,%,$(filter %/, \
 		     $(init-) $(core-) $(drivers-) $(net-) $(libs-) $(virt-))))
 
-init-y		:= $(patsubst %/, %/built-in.o, $(init-y))
-core-y		:= $(patsubst %/, %/built-in.o, $(core-y))
-drivers-y	:= $(patsubst %/, %/built-in.o, $(drivers-y))
-net-y		:= $(patsubst %/, %/built-in.o, $(net-y))
+init-y		:= $(patsubst %/, %/built-in.a, $(init-y))
+core-y		:= $(patsubst %/, %/built-in.a, $(core-y))
+drivers-y	:= $(patsubst %/, %/built-in.a, $(drivers-y))
+net-y		:= $(patsubst %/, %/built-in.a, $(net-y))
 libs-y1		:= $(patsubst %/, %/lib.a, $(libs-y))
-libs-y2		:= $(filter-out %.a, $(patsubst %/, %/built-in.o, $(libs-y)))
-virt-y		:= $(patsubst %/, %/built-in.o, $(virt-y))
+libs-y2		:= $(patsubst %/, %/built-in.a, $(filter-out %.a, $(libs-y)))
+virt-y		:= $(patsubst %/, %/built-in.a, $(virt-y))
 
 # Externally visible symbols (used by link-vmlinux.sh)
 export KBUILD_VMLINUX_INIT := $(head-y) $(init-y)
@@ -1368,6 +1332,13 @@ prepare0: archprepare gcc-plugins
 # All the preparing..
 prepare: prepare0 prepare-objtool
 
+ifdef CONFIG_DEBUG_INFO_BTF
+PHONY += prepare-btf
+prepare: prepare-btf
+prepare-btf:
+	$(Q)$(CONFIG_SHELL) $(srctree)/scripts/btf-tools.sh >/dev/null
+endif
+
 # Support for using generic headers in asm-generic
 PHONY += asm-generic uapi-asm-generic
 asm-generic: uapi-asm-generic
@@ -1389,15 +1360,7 @@ endif
 endif
 
 # Disable clang-specific config options when using a different compiler
-clang-specific-configs := LTO_CLANG CFI_CLANG SHADOW_CALL_STACK INIT_STACK_ALL
-
-# Disable lld-specific configs when using a different linker with GCC
-lld-specific-configs := RELR
-ifneq ($(cc-name),clang)
-ifneq ($(ld-name),lld)
-	clang-specific-configs += $(lld-specific-configs)
-endif
-endif
+clang-specific-configs := LTO_CLANG CFI_CLANG SHADOW_CALL_STACK INIT_STACK_ALL_ZERO
 
 PHONY += check-clang-specific-options
 check-clang-specific-options: $(KCONFIG_CONFIG) FORCE
@@ -1921,7 +1884,6 @@ clean: $(clean-dirs)
 		-o -name '*.dwo'  \
 		-o -name '*.su'  \
 		-o -name '.*.d' -o -name '.*.tmp' -o -name '*.mod.c' \
-		-o -name '*.lex.c' -o -name '*.tab.[ch]' \
 		-o -name '*.symtypes' -o -name 'modules.order' \
 		-o -name modules.builtin -o -name '.tmp_*.o.*' \
 		-o -name '*.c.[012]*.*' \

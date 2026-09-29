@@ -2051,7 +2051,8 @@ static int issue_discard_thread(void *data)
 			}
 		}
 
-		if (sbi->gc_mode == GC_URGENT) {
+		if (sbi->gc_mode == GC_URGENT ||
+		    !f2fs_available_free_memory(sbi, DISCARD_CACHE)) {
 			/* VENDOR_EDIT huangjianan@TECH.Storage.FS
 			 * 2020-1-14, add for oDiscard decoupling
 			 */
@@ -2473,6 +2474,8 @@ static void update_sit_entry(struct f2fs_sb_info *sbi, block_t blkaddr, int del)
 #endif
 
 	segno = GET_SEGNO(sbi, blkaddr);
+	if (segno == NULL_SEGNO)
+		return;
 
 	se = get_seg_entry(sbi, segno);
 	new_vblocks = se->valid_blocks + del;

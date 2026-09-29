@@ -138,7 +138,7 @@ int dsi_dsc_create_pps_buf_cmd(struct msm_display_dsc_info *dsc, char *buf,
 /* LiPing-M@PSW.MM.Display.LCD.Feature,2020-06-05, Add for 90hz/60hz switch */
     *bp++ = 0;
 #else
-    *bp++ = 10;
+    *bp++ = dsc->pps_delay_ms;
 #endif /* OPLUS_BUG_STABILITY */
 	*bp++ = 0;
 	*bp++ = 128;
@@ -1836,30 +1836,14 @@ static int dsi_panel_parse_dfps_caps(struct dsi_panel *panel)
 		goto error;
 	}
 
-	dfps_caps->dfps_list_len = utils->count_u32_elems(utils->data,
-				  "qcom,dsi-supported-dfps-list");
-	if (dfps_caps->dfps_list_len < 1) {
-		pr_err("[%s] dfps refresh list not present\n", name);
-		rc = -EINVAL;
-		goto error;
-	}
+	dfps_caps->dfps_list_len = 2;
 
 	dfps_caps->dfps_list = kcalloc(dfps_caps->dfps_list_len, sizeof(u32),
 			GFP_KERNEL);
-	if (!dfps_caps->dfps_list) {
-		rc = -ENOMEM;
-		goto error;
-	}
 
-	rc = utils->read_u32_array(utils->data,
-			"qcom,dsi-supported-dfps-list",
-			dfps_caps->dfps_list,
-			dfps_caps->dfps_list_len);
-	if (rc) {
-		pr_err("[%s] dfps refresh rate list parse failed\n", name);
-		rc = -EINVAL;
-		goto error;
-	}
+	dfps_caps->dfps_list[0] = 90;
+	dfps_caps->dfps_list[1] = 60;
+
 	dfps_caps->dfps_support = true;
 
 	/* calculate max and min fps */
@@ -3310,6 +3294,13 @@ static int dsi_panel_parse_dsc_params(struct dsi_display_mode *mode,
 		goto error;
 	}
 	priv_info->dsc.bpc = data;
+
+	rc = utils->read_u32(utils->data, "qcom,mdss-pps-delay-ms", &data);
+	if (rc) {
+		pr_debug("pps-delay-ms not specified, defaulting to 0\n");
+		priv_info->dsc.pps_delay_ms = 0;
+	}
+	priv_info->dsc.pps_delay_ms = data;
 
 	rc = utils->read_u32(utils->data, "qcom,mdss-dsc-bit-per-pixel",
 			&data);

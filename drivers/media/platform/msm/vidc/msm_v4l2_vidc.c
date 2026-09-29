@@ -10,9 +10,6 @@
  * GNU General Public License for more details.
  *
  */
-#ifndef CONFIG_DEBUG_FS
-#define CREATE_TRACE_POINTS
-#endif
 
 #include <linux/debugfs.h>
 #include <linux/dma-mapping.h>
@@ -904,11 +901,9 @@ static int __init msm_vidc_init(void)
 	INIT_LIST_HEAD(&vidc_driver->cores);
 	mutex_init(&vidc_driver->lock);
 	vidc_driver->debugfs_root = msm_vidc_debugfs_init_drv();
-#ifdef CONFIG_DEBUG_FS
 	if (!vidc_driver->debugfs_root)
 		dprintk(VIDC_ERR,
 			"Failed to create debugfs for msm_vidc\n");
-#endif
 
 	rc = platform_driver_register(&msm_vidc_driver);
 	if (rc) {

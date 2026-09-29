@@ -281,15 +281,18 @@ struct task_struct *__kthread_create_on_node(int (*threadfn)(void *data),
 {
 	DECLARE_COMPLETION_ONSTACK(done);
 	struct task_struct *task;
-	struct kthread_create_info create;
+	struct kthread_create_info *create = kmalloc(sizeof(*create),
+						     GFP_KERNEL);
 
-	create.threadfn = threadfn;
-	create.data = data;
-	create.node = node;
-	create.done = &done;
+	if (!create)
+		return ERR_PTR(-ENOMEM);
+	create->threadfn = threadfn;
+	create->data = data;
+	create->node = node;
+	create->done = &done;
 
 	spin_lock(&kthread_create_lock);
-	list_add_tail(&create.list, &kthread_create_list);
+	list_add_tail(&create->list, &kthread_create_list);
 	spin_unlock(&kthread_create_lock);
 
 	wake_up_process(kthreadd_task);
@@ -304,7 +307,7 @@ struct task_struct *__kthread_create_on_node(int (*threadfn)(void *data),
 		 * calls complete(), leave the cleanup of this structure to
 		 * that thread.
 		 */
-		if (xchg(&create.done, NULL))
+		if (xchg(&create->done, NULL))
 			return ERR_PTR(-EINTR);
 		/*
 		 * kthreadd (or new kernel thread) will call complete()
@@ -312,7 +315,7 @@ struct task_struct *__kthread_create_on_node(int (*threadfn)(void *data),
 		 */
 		wait_for_completion(&done);
 	}
-	task = create.result;
+	task = create->result;
 	if (!IS_ERR(task)) {
 		static const struct sched_param param = { .sched_priority = 0 };
 		char name[TASK_COMM_LEN];
@@ -330,6 +333,7 @@ struct task_struct *__kthread_create_on_node(int (*threadfn)(void *data),
 		sched_setscheduler_nocheck(task, SCHED_NORMAL, &param);
 		set_cpus_allowed_ptr(task, cpu_all_mask);
 	}
+	kfree(create);
 	return task;
 }
 
@@ -670,10 +674,25 @@ repeat:
 	spin_unlock_irq(&worker->lock);
 
 	if (work) {
+		kthread_work_func_t func = work->func;
 		__set_current_state(TASK_RUNNING);
+		trace_sched_kthread_work_execute_start(work);
 		work->func(work);
-	} else if (!freezing(current))
+		/*
+		 * Avoid dereferencing work after this point.  The trace
+		 * event only cares about the address.
+		 */
+		trace_sched_kthread_work_execute_end(work, func);
+	} else if (!freezing(current)) {
 		schedule();
+	} else {
+		/*
+		 * Handle the case where the current remains
+		 * TASK_INTERRUPTIBLE. try_to_freeze() expects
+		 * the current to be TASK_RUNNING.
+		 */
+		__set_current_state(TASK_RUNNING);
+	}
 
 	try_to_freeze();
 	cond_resched();
@@ -771,6 +790,19 @@ kthread_create_worker_on_cpu(int cpu, unsigned int flags,
 }
 EXPORT_SYMBOL(kthread_create_worker_on_cpu);
 
+/*
+ * Returns true when the work could not be queued at the moment.
+ * It happens when it is already pending in a worker list
+ * or when it is being cancelled.
+ */
+static inline bool queuing_blocked(struct kthread_worker *worker,
+				   struct kthread_work *work)
+{
+	lockdep_assert_held(&worker->lock);
+
+	return !list_empty(&work->node) || work->canceling;
+}
+
 static void kthread_insert_work_sanity_check(struct kthread_worker *worker,
 					     struct kthread_work *work)
 {
@@ -786,6 +818,8 @@ static void kthread_insert_work(struct kthread_worker *worker,
 				struct list_head *pos)
 {
 	kthread_insert_work_sanity_check(worker, work);
+
+	trace_sched_kthread_work_queue_work(worker, work);
 
 	list_add_tail(&work->node, pos);
 	work->worker = worker;

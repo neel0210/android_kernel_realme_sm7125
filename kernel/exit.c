@@ -56,6 +56,7 @@
 #include <trace/events/sched.h>
 #include <linux/hw_breakpoint.h>
 #include <linux/oom.h>
+#include <linux/oom_score_notifier.h>
 #include <linux/writeback.h>
 #include <linux/shm.h>
 #include <linux/kcov.h>
@@ -63,11 +64,16 @@
 #include <linux/rcuwait.h>
 #include <linux/compat.h>
 #include <linux/sysfs.h>
+#include <linux/usermode_driver.h>
 
 #include <linux/uaccess.h>
 #include <asm/unistd.h>
 #include <asm/pgtable.h>
 #include <asm/mmu_context.h>
+
+#if defined(OPLUS_FEATURE_VIRTUAL_RESERVE_MEMORY) && defined(CONFIG_VIRTUAL_RESERVE_MEMORY)
+#include <linux/resmap_account.h>
+#endif
 
 /*
  * The default value should be high enough to not crash a system that randomly
@@ -120,6 +126,7 @@ static void __unhash_process(struct task_struct *p, bool group_dead)
 	nr_threads--;
 	detach_pid(p, PIDTYPE_PID);
 	if (group_dead) {
+		detach_pid(p, PIDTYPE_TGID);
 		detach_pid(p, PIDTYPE_PGID);
 		detach_pid(p, PIDTYPE_SID);
 
@@ -159,6 +166,9 @@ static void __exit_signal(struct task_struct *tsk)
 		if (unlikely(has_group_leader_pid(tsk)))
 			posix_cpu_timers_exit_group(tsk);
 	}
+#endif
+#ifdef CONFIG_OOM_SCORE_NOTIFIER
+	oom_score_notify_free(tsk);
 #endif
 
 	if (group_dead) {
@@ -493,6 +503,8 @@ retry:
 	 * Search through everything else, we should not get here often.
 	 */
 	for_each_process(g) {
+		if (atomic_read(&mm->mm_users) <= 1)
+			break;
 		if (g->flags & PF_KTHREAD)
 			continue;
 		for_each_thread(g, c) {
@@ -543,7 +555,7 @@ static void exit_mm(void)
 {
 	struct mm_struct *mm = current->mm;
 	struct core_state *core_state;
-	__maybe_unused int mm_released;
+	int mm_released;
 
 	exit_mm_release(current, mm);
 	if (!mm)
@@ -593,13 +605,15 @@ static void exit_mm(void)
 	enter_lazy_tlb(mm, current);
 	task_unlock(current);
 	mm_update_next_owner(mm);
-	mmput(mm);
-#ifdef CONFIG_ANDROID_SIMPLE_LMK
-	clear_thread_flag(TIF_MEMDIE);
-#else
+
+#if defined(OPLUS_FEATURE_VIRTUAL_RESERVE_MEMORY) && defined(CONFIG_OPPO_HEALTHINFO) && defined(CONFIG_VIRTUAL_RESERVE_MEMORY)
+	trigger_svm_oom_event(mm, 0, 0);
+#endif
+	mm_released = mmput(mm);
 	if (test_thread_flag(TIF_MEMDIE))
 		exit_oom_victim();
-#endif
+	if (mm_released)
+		set_tsk_thread_flag(current, TIF_MM_RELEASED);
 }
 
 static struct task_struct *find_alive_thread(struct task_struct *p)
@@ -740,7 +754,8 @@ static void forget_original_parent(struct task_struct *father,
 				t->parent = t->real_parent;
 			if (t->pdeath_signal)
 				group_send_sig_info(t->pdeath_signal,
-						    SEND_SIG_NOINFO, t);
+						    SEND_SIG_NOINFO, t,
+						    PIDTYPE_TGID);
 		}
 		/*
 		 * If this is a threaded reparent there is no need to
@@ -824,32 +839,6 @@ static void check_stack_usage(void)
 }
 #else
 static inline void check_stack_usage(void) {}
-#endif
-
-#ifndef CONFIG_PROFILING
-static BLOCKING_NOTIFIER_HEAD(task_exit_notifier);
-
-int profile_event_register(enum profile_type t, struct notifier_block *n)
-{
-	if (t == PROFILE_TASK_EXIT)
-		return blocking_notifier_chain_register(&task_exit_notifier, n);
-
-	return -ENOSYS;
-}
-
-int profile_event_unregister(enum profile_type t, struct notifier_block *n)
-{
-	if (t == PROFILE_TASK_EXIT)
-		return blocking_notifier_chain_unregister(&task_exit_notifier,
-							  n);
-
-	return -ENOSYS;
-}
-
-void profile_task_exit(struct task_struct *tsk)
-{
-	blocking_notifier_call_chain(&task_exit_notifier, 0, tsk);
-}
 #endif
 
 void __noreturn do_exit(long code)
@@ -956,6 +945,8 @@ void __noreturn do_exit(long code)
 	exit_task_namespaces(tsk);
 	exit_task_work(tsk);
 	exit_thread(tsk);
+	if (group_dead)
+		exit_umh(tsk);
 
 	/*
 	 * Flush inherited counters to the parent - before the parent
@@ -1111,14 +1102,6 @@ struct wait_opts {
 	wait_queue_entry_t		child_wait;
 	int			notask_error;
 };
-
-static inline
-struct pid *task_pid_type(struct task_struct *task, enum pid_type type)
-{
-	if (type != PIDTYPE_PID)
-		task = task->group_leader;
-	return task->pids[type].pid;
-}
 
 static int eligible_pid(struct wait_opts *wo, struct task_struct *p)
 {

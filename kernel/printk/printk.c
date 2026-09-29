@@ -52,6 +52,7 @@
 #include <linux/uaccess.h>
 #include <asm/sections.h>
 
+#include <trace/events/initcall.h>
 #define CREATE_TRACE_POINTS
 #include <trace/events/printk.h>
 
@@ -180,7 +181,7 @@ __setup("printk.devkmsg=", control_devkmsg);
 char devkmsg_log_str[DEVKMSG_STR_MAX_SIZE] = "ratelimit";
 
 int devkmsg_sysctl_set_loglvl(struct ctl_table *table, int write,
-			      void __user *buffer, size_t *lenp, loff_t *ppos)
+			      void *buffer, size_t *lenp, loff_t *ppos)
 {
 	char old_str[DEVKMSG_STR_MAX_SIZE];
 	unsigned int old;
@@ -808,9 +809,6 @@ static ssize_t devkmsg_write(struct kiocb *iocb, struct iov_iter *from)
 	size_t len = iov_iter_count(from);
 	ssize_t ret = len;
 
-	/* Don't allow userspace to write to /dev/kmesg */
-	return len;
-
 	if (!user || len > LOG_LINE_MAX)
 		return -EINVAL;
 
@@ -856,18 +854,10 @@ static ssize_t devkmsg_write(struct kiocb *iocb, struct iov_iter *from)
 			endp++;
 			len -= endp - line;
 			line = endp;
-           		if(strncmp(line, "logd: Skipping", sizeof("logd: Skipping")))
-				goto ignore;
-                }
-	}
-
-	if (unlikely(strncmp("healthd", line, 7) == 0 || strncmp("Trustonic TEE", line, 13) == 0))
-	{
-		return len;
+		}
 	}
 
 	printk_emit(facility, level, NULL, 0, "%s", line);
-ignore:
 	kfree(buf);
 	return ret;
 }
@@ -1353,11 +1343,13 @@ static size_t msg_print_text(const struct printk_log *msg, bool syslog, char *bu
 
 static int syslog_print(char __user *buf, int size)
 {
-	char text[LOG_LINE_MAX + PREFIX_MAX];
+	char *text;
 	struct printk_log *msg;
 	int len = 0;
 
-	memset(&text, 0, LOG_LINE_MAX + PREFIX_MAX);
+	text = kmalloc(LOG_LINE_MAX + PREFIX_MAX, GFP_KERNEL);
+	if (!text)
+		return -ENOMEM;
 
 	while (size > 0) {
 		size_t n;
@@ -1406,15 +1398,18 @@ static int syslog_print(char __user *buf, int size)
 		buf += n;
 	}
 
+	kfree(text);
 	return len;
 }
 
 static int syslog_print_all(char __user *buf, int size, bool clear)
 {
-	char text[LOG_LINE_MAX + PREFIX_MAX];
+	char *text;
 	int len = 0;
 
-	memset(&text, 0, LOG_LINE_MAX + PREFIX_MAX);
+	text = kmalloc(LOG_LINE_MAX + PREFIX_MAX, GFP_KERNEL);
+	if (!text)
+		return -ENOMEM;
 
 	logbuf_lock_irq();
 	if (buf) {
@@ -1485,6 +1480,7 @@ static int syslog_print_all(char __user *buf, int size, bool clear)
 	}
 	logbuf_unlock_irq();
 
+	kfree(text);
 	return len;
 }
 
@@ -1741,6 +1737,12 @@ static int console_trylock_spinning(void)
 	 * complain.
 	 */
 	mutex_acquire(&console_lock_dep_map, 0, 1, _THIS_IP_);
+
+	/*
+	 * Update @console_may_schedule for trylock because the previous
+	 * owner may have been schedulable.
+	 */
+	console_may_schedule = 0;
 
 	return 1;
 }
@@ -2325,6 +2327,7 @@ int is_console_locked(void)
 {
 	return console_locked;
 }
+EXPORT_SYMBOL(is_console_locked);
 
 /*
  * Check if we have any console that is capable of printing while cpu is
@@ -2861,7 +2864,9 @@ EXPORT_SYMBOL(unregister_console);
  */
 void __init console_init(void)
 {
-	initcall_t *call;
+	int ret;
+	initcall_t call;
+	initcall_entry_t *ce;
 
 	/* Setup the default TTY line discipline. */
 	n_tty_init();
@@ -2870,10 +2875,14 @@ void __init console_init(void)
 	 * set up the console device so that later boot sequences can
 	 * inform about problems etc..
 	 */
-	call = __con_initcall_start;
-	while (call < __con_initcall_end) {
-		(*call)();
-		call++;
+	ce = __con_initcall_start;
+	trace_initcall_level("console");
+	while (ce < __con_initcall_end) {
+		call = initcall_from_entry(ce);
+		trace_initcall_start(call);
+		ret = call();
+		trace_initcall_finish(call, ret);
+		ce++;
 	}
 }
 
@@ -2953,7 +2962,7 @@ static void wake_up_klogd_work_func(struct irq_work *irq_work)
 
 static DEFINE_PER_CPU(struct irq_work, wake_up_klogd_work) = {
 	.func = wake_up_klogd_work_func,
-	.flags = IRQ_WORK_LAZY,
+	.flags = ATOMIC_INIT(IRQ_WORK_LAZY),
 };
 
 void wake_up_klogd(void)

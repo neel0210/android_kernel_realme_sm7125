@@ -17,6 +17,7 @@ obj-y     = fork.o exec_domain.o panic.o \
 obj-y += panic_flush.o
 #endif
 
+obj-$(CONFIG_USERMODE_DRIVER) += usermode_driver.o
 obj-$(CONFIG_MODULES) += kmod.o
 obj-$(CONFIG_MULTIUSER) += groups.o
 
@@ -124,10 +125,20 @@ obj-$(CONFIG_TORTURE_TEST) += torture.o
 
 obj-$(CONFIG_HAS_IOMEM) += memremap.o
 
+#ifdef OPLUS_FEATURE_UIFIRST
+#XieLiujie@BSP.KERNEL.PERFORMANCE, 2020/05/25, Add for UIFirst
+obj-y += uifirst/
+#endif /* OPLUS_FEATURE_UIFIRST */
+
+#ifdef OPLUS_FEATURE_UIFIRST
+#Liujie.Xie@TECH.Kernel.Sched, 2020/03/23, add for heavy load task
+obj-y += oppo_special_opt/
+#endif /* OPLUS_FEATURE_UIFIRST */
+
 $(obj)/configs.o: $(obj)/config_data.h
 
 targets += config_data.gz
-$(obj)/config_data.gz: arch/arm64/configs/stock_defconfig FORCE
+$(obj)/config_data.gz: $(KCONFIG_CONFIG) FORCE
 	$(call if_changed,gzip)
 
       filechk_ikconfiggz = (echo "static const char kernel_config_data[] __used = MAGIC_START"; cat $< | scripts/basic/bin2c; echo "MAGIC_END;")

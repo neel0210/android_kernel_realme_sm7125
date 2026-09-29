@@ -289,7 +289,7 @@
 			"INFO:%s: " fmt, __func__, arg); \
 	if ((dev) && (dev)->ipc_log)   \
 		ipc_log_string((dev)->ipc_log, "%s: " fmt, __func__, arg); \
-	pr_debug("%s: " fmt, __func__, arg);  \
+	pr_info("%s: " fmt, __func__, arg);  \
 	} while (0)
 
 #define PCIE_ERR(dev, fmt, arg...) do {			 \
@@ -6789,7 +6789,6 @@ static int __init pcie_init(void)
 	pcie_drv.rc_num = 0;
 	mutex_init(&pcie_drv.drv_lock);
 
-#ifdef CONFIG_IPC_LOGGING
 	for (i = 0; i < MAX_RC_NUM; i++) {
 		snprintf(rc_name, MAX_RC_NAME_LEN, "pcie%d-short", i);
 		msm_pcie_dev[i].ipc_log =
@@ -6845,7 +6844,6 @@ static int __init pcie_init(void)
 		msm_pcie_dev_tbl[i].event_reg = NULL;
 		msm_pcie_dev_tbl[i].registered = true;
 	}
-#endif
 
 	crc8_populate_msb(msm_pcie_crc8_table, MSM_PCIE_CRC8_POLYNOMIAL);
 

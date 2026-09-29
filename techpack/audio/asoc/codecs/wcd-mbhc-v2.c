@@ -726,7 +726,6 @@ void wcd_mbhc_report_plug(struct wcd_mbhc *mbhc, int insertion,
 			}
 			mbhc->hph_status &= ~(SND_JACK_HEADSET |
 						SND_JACK_LINEOUT |
-						SND_JACK_ANC_HEADPHONE |
 						SND_JACK_UNSUPPORTED);
 		}
 
@@ -744,8 +743,9 @@ void wcd_mbhc_report_plug(struct wcd_mbhc *mbhc, int insertion,
 			mbhc->jiffies_atreport = jiffies;
 		} else if (jack_type == SND_JACK_LINEOUT) {
 			mbhc->current_plug = MBHC_PLUG_TYPE_HIGH_HPH;
-		} else if (jack_type == SND_JACK_ANC_HEADPHONE)
-			mbhc->current_plug = MBHC_PLUG_TYPE_ANC_HEADPHONE;
+		} else {
+			pr_debug("%s: invalid Jack type %d\n",__func__, jack_type);
+		}
 
 		#ifndef OPLUS_ARCH_EXTENDS
 		/*Suresh.Alla@MULTIMEDIA.AUDIODRIVER.HEADSETSETDET.1379744, 2020/08/13,
@@ -930,8 +930,6 @@ void wcd_mbhc_find_plug_and_report(struct wcd_mbhc *mbhc,
 			anc_mic_found =
 			mbhc->mbhc_fn->wcd_mbhc_detect_anc_plug_type(mbhc);
 		jack_type = SND_JACK_HEADSET;
-		if (anc_mic_found)
-			jack_type = SND_JACK_ANC_HEADPHONE;
 
 		/*
 		 * If Headphone was reported previously, this will
@@ -1172,9 +1170,6 @@ static void wcd_mbhc_swch_irq_handler(struct wcd_mbhc *mbhc)
 			    WCD_MBHC_REG_UPDATE_BITS(WCD_MBHC_ELECT_ISRC_EN, 0);
 			mbhc->is_extn_cable = false;
 			jack_type = SND_JACK_LINEOUT;
-			break;
-		case MBHC_PLUG_TYPE_ANC_HEADPHONE:
-			jack_type = SND_JACK_ANC_HEADPHONE;
 			break;
 		default:
 			pr_info("%s: Invalid current plug: %d\n",
@@ -2441,10 +2436,6 @@ int wcd_mbhc_init(struct wcd_mbhc *mbhc, struct snd_soc_codec *codec,
 	const char *mbhc_cross_conn = "oppo,mbhc-check-cross-conn";
 	#endif /* OPLUS_ARCH_EXTENDS */
 
- 	impedance_det_en = true;
-
-	impedance_det_en = true;
-	
 	pr_debug("%s: enter\n", __func__);
 
 	ret = of_property_read_u32(card->dev->of_node, hph_switch, &hph_swh);
@@ -2513,8 +2504,7 @@ int wcd_mbhc_init(struct wcd_mbhc *mbhc, struct snd_soc_codec *codec,
 	mbhc->is_btn_press = false;
 	mbhc->codec = codec;
 	mbhc->intr_ids = mbhc_cdc_intr_ids;
-//	mbhc->impedance_detect = impedance_det_en;
-	mbhc->impedance_detect = true;
+	mbhc->impedance_detect = impedance_det_en;
 	mbhc->hphl_swh = hph_swh;
 	mbhc->gnd_swh = gnd_swh;
 	mbhc->micbias_enable = false;

@@ -37,7 +37,6 @@ lib-y := ctype.o string.o vsprintf.o cmdline.o \
 	 earlycpio.o seq_buf.o siphash.o \
 	 nmi_backtrace.o nodemask.o win_minmax.o
 
-CFLAGS_kobject_uevent.o += -Wframe-larger-than=3072
 lib-$(CONFIG_MMU) += ioremap.o
 lib-$(CONFIG_SMP) += cpumask.o
 lib-$(CONFIG_DMA_NOOP_OPS) += dma-noop.o
@@ -47,15 +46,12 @@ lib-y	+= kobject.o klist.o
 obj-y	+= lockref.o
 
 KASAN_SANITIZE_find_bit.o := n
-obj-y += bcd.o div64.o sort.o parser.o random32.o \
+obj-y += bcd.o div64.o sort.o parser.o debug_locks.o random32.o \
 	 bust_spinlocks.o kasprintf.o bitmap.o scatterlist.o \
 	 gcd.o lcm.o list_sort.o uuid.o flex_array.o iov_iter.o clz_ctz.o \
 	 bsearch.o find_bit.o llist.o memweight.o kfifo.o \
 	 percpu-refcount.o percpu_ida.o rhashtable.o reciprocal_div.o \
 	 once.o refcount.o usercopy.o errseq.o
-
-obj-$(CONFIG_DEBUG_KERNEL) += debug_locks.o
-
 obj-y += string_helpers.o
 obj-$(CONFIG_TEST_STRING_HELPERS) += test-string_helpers.o
 obj-y += hexdump.o
@@ -169,6 +165,7 @@ obj-$(CONFIG_NETDEV_NOTIFIER_ERROR_INJECT) += netdev-notifier-error-inject.o
 obj-$(CONFIG_MEMORY_NOTIFIER_ERROR_INJECT) += memory-notifier-error-inject.o
 obj-$(CONFIG_OF_RECONFIG_NOTIFIER_ERROR_INJECT) += \
 	of-reconfig-notifier-error-inject.o
+obj-$(CONFIG_FUNCTION_ERROR_INJECTION) += error-inject.o
 
 lib-$(CONFIG_GENERIC_BUG) += bug.o
 
@@ -221,7 +218,7 @@ KCOV_INSTRUMENT_stackdepot.o := n
 libfdt_files = fdt.o fdt_ro.o fdt_wip.o fdt_rw.o fdt_sw.o fdt_strerror.o \
 	       fdt_empty_tree.o
 $(foreach file, $(libfdt_files), \
-	$(eval CFLAGS_$(file) = -I$(src)/../scripts/dtc/libfdt))
+	$(eval CFLAGS_$(file) = -I $(srctree)/scripts/dtc/libfdt))
 lib-$(CONFIG_LIBFDT) += $(libfdt_files)
 
 obj-$(CONFIG_RBTREE_TEST) += rbtree_test.o

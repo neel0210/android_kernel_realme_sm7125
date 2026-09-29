@@ -262,7 +262,7 @@ void rq_attach_root(struct rq *rq, struct root_domain *rd)
 	raw_spin_unlock_irqrestore(&rq->lock, flags);
 
 	if (old_rd)
-		call_rcu(&old_rd->rcu, free_rootdomain);
+		call_rcu_sched(&old_rd->rcu, free_rootdomain);
 }
 
 void sched_get_rd(struct root_domain *rd)
@@ -275,7 +275,7 @@ void sched_put_rd(struct root_domain *rd)
 	if (!atomic_dec_and_test(&rd->refcount))
 		return;
 
-	call_rcu(&rd->rcu, free_rootdomain);
+	call_rcu_sched(&rd->rcu, free_rootdomain);
 }
 
 static int init_rootdomain(struct root_domain *rd)
@@ -417,10 +417,9 @@ DEFINE_PER_CPU(int, sd_llc_size);
 DEFINE_PER_CPU(int, sd_llc_id);
 DEFINE_PER_CPU(struct sched_domain_shared *, sd_llc_shared);
 DEFINE_PER_CPU(struct sched_domain *, sd_numa);
+DEFINE_PER_CPU(struct sched_domain *, sd_asym);
 DEFINE_PER_CPU(struct sched_domain *, sd_ea);
 DEFINE_PER_CPU(struct sched_domain *, sd_scs);
-DEFINE_PER_CPU(struct sched_domain *, sd_asym_packing);
-DEFINE_PER_CPU(struct sched_domain *, sd_asym_cpucapacity);
 DEFINE_STATIC_KEY_FALSE(sched_asym_cpucapacity);
 
 static void update_top_cache_domain(int cpu)
@@ -447,10 +446,7 @@ static void update_top_cache_domain(int cpu)
 	rcu_assign_pointer(per_cpu(sd_numa, cpu), sd);
 
 	sd = highest_flag_domain(cpu, SD_ASYM_PACKING);
-	rcu_assign_pointer(per_cpu(sd_asym_packing, cpu), sd);
-
-	sd = lowest_flag_domain(cpu, SD_ASYM_CPUCAPACITY);
-	rcu_assign_pointer(per_cpu(sd_asym_cpucapacity, cpu), sd);
+	rcu_assign_pointer(per_cpu(sd_asym, cpu), sd);
 
 	for_each_domain(cpu, sd) {
 		if (sd->groups->sge)
@@ -1141,16 +1137,13 @@ static void set_domain_attribute(struct sched_domain *sd,
 	if (!attr || attr->relax_domain_level < 0) {
 		if (default_relax_domain_level < 0)
 			return;
-		else
-			request = default_relax_domain_level;
+		request = default_relax_domain_level;
 	} else
 		request = attr->relax_domain_level;
-	if (request < sd->level) {
+
+	if (sd->level >= request) {
 		/* Turn off idle balance on this domain: */
 		sd->flags &= ~(SD_BALANCE_WAKE|SD_BALANCE_NEWIDLE);
-	} else {
-		/* Turn on idle balance on this domain: */
-		sd->flags |= (SD_BALANCE_WAKE|SD_BALANCE_NEWIDLE);
 	}
 }
 
@@ -1278,8 +1271,9 @@ sd_init(struct sched_domain_topology_level *tl,
 	*sd = (struct sched_domain){
 		.min_interval		= sd_weight,
 		.max_interval		= 2*sd_weight,
-		.busy_factor		= 16,
+		.busy_factor		= 32,
 		.imbalance_pct		= 125,
+
 		.cache_nice_tries	= 0,
 		.busy_idx		= 0,
 		.idle_idx		= 0,
@@ -1883,12 +1877,12 @@ build_sched_domains(const struct cpumask *cpu_map, struct sched_domain_attr *att
 
 		sd = *per_cpu_ptr(d.sd, i);
 
-		if ((max_cpu < 0) || (cpu_rq(i)->cpu_capacity_orig >
-		    cpu_rq(max_cpu)->cpu_capacity_orig))
+		if ((max_cpu < 0) || (arch_scale_cpu_capacity(NULL, i) >
+				arch_scale_cpu_capacity(NULL, max_cpu)))
 			WRITE_ONCE(d.rd->max_cap_orig_cpu, i);
 
-		if ((min_cpu < 0) || (cpu_rq(i)->cpu_capacity_orig <
-		    cpu_rq(min_cpu)->cpu_capacity_orig))
+		if ((min_cpu < 0) || (arch_scale_cpu_capacity(NULL, i) <
+				arch_scale_cpu_capacity(NULL, min_cpu)))
 			WRITE_ONCE(d.rd->min_cap_orig_cpu, i);
 
 		cpu_attach_domain(sd, d.rd, i);
@@ -1899,14 +1893,26 @@ build_sched_domains(const struct cpumask *cpu_map, struct sched_domain_attr *att
 		int max_cpu = READ_ONCE(d.rd->max_cap_orig_cpu);
 		int min_cpu = READ_ONCE(d.rd->min_cap_orig_cpu);
 
-		if ((cpu_rq(i)->cpu_capacity_orig
-				!=  cpu_rq(min_cpu)->cpu_capacity_orig) &&
-			(cpu_rq(i)->cpu_capacity_orig
-				!=  cpu_rq(max_cpu)->cpu_capacity_orig)) {
+		if ((arch_scale_cpu_capacity(NULL, i)
+				!=  arch_scale_cpu_capacity(NULL, min_cpu)) &&
+				(arch_scale_cpu_capacity(NULL, i)
+				!=  arch_scale_cpu_capacity(NULL, max_cpu))) {
 			WRITE_ONCE(d.rd->mid_cap_orig_cpu, i);
 			break;
 		}
 	}
+
+	/*
+	 * The max_cpu_capacity reflect the original capacity which does not
+	 * change dynamically. So update the max cap CPU and its capacity
+	 * here.
+	 */
+	if (d.rd->max_cap_orig_cpu != -1) {
+		d.rd->max_cpu_capacity.cpu = d.rd->max_cap_orig_cpu;
+		d.rd->max_cpu_capacity.val = arch_scale_cpu_capacity(NULL,
+						d.rd->max_cap_orig_cpu);
+	}
+
 	rcu_read_unlock();
 
 	if (!cpumask_empty(cpu_map))

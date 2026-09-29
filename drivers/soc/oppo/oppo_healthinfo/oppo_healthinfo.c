@@ -22,6 +22,9 @@
 #include <linux/blkdev.h>
 #include <linux/ktime.h>
 #include <linux/seq_file.h>
+#ifdef CONFIG_PROCESS_RECLAIM_ENHANCE
+#include <linux/process_mm_reclaim.h>
+#endif
 
 #define BUFFER_SIZE_S 256
 #define BUFFER_SIZE_M 512
@@ -153,6 +156,9 @@ static inline void ohm_sched_stat_record_common(struct sched_stat_para *sched_st
         }
 }
 
+#ifdef OPLUS_FEATURE_UIFIRST
+extern bool test_task_ux(struct task_struct *task);
+#endif
 void ohm_schedstats_record(int sched_type, struct task_struct *task, u64 delta_ms)
 {
     struct sched_stat_para *sched_stat = &oppo_sched_para[sched_type];
@@ -176,6 +182,11 @@ void ohm_schedstats_record(int sched_type, struct task_struct *task, u64 delta_m
                 ohm_action_trig(sched_type);
         }
     }
+#ifdef OPLUS_FEATURE_UIFIRST
+	if (test_task_ux(task)){
+        ohm_sched_stat_record_common(sched_stat, &sched_stat->ux, delta_ms);
+    }
+#endif
     return;
 }
 
@@ -855,6 +866,10 @@ extern int __weak create_kmalloc_debug(struct proc_dir_entry *parent);
 #ifdef CONFIG_VMALLOC_DEBUG
 extern int __weak create_vmalloc_debug(struct proc_dir_entry *parent);
 #endif
+#if defined(OPLUS_FEATURE_MULTI_KSWAPD) && defined(CONFIG_OPPO_MULTI_KSWAPD)
+/* multi kswapd support create proc fs file node */
+extern int create_kswapd_threads_proc(struct proc_dir_entry *parent);
+#endif
 #ifdef CONFIG_VIRTUAL_RESERVE_MEMORY
 extern int create_reserved_area_enable_proc(struct proc_dir_entry *parent);
 #endif
@@ -950,6 +965,11 @@ static int __init oppo_healthinfo_init(void)
 	}
 #endif
 #endif
+#ifdef CONFIG_PROCESS_RECLAIM_ENHANCE
+	ret = create_process_reclaim_enable_proc(oppo_healthinfo);
+	if (ret)
+		goto ERROR_INIT_VERSION;
+#endif
 
 /****** thresh update ******/
     sched_thresh =  proc_mkdir("sched_thresh", oppo_healthinfo);
@@ -989,6 +1009,12 @@ static int __init oppo_healthinfo_init(void)
 		goto ERROR_INIT_VERSION;
 #endif
 
+#if defined(OPLUS_FEATURE_MULTI_KSWAPD) && defined(CONFIG_OPPO_MULTI_KSWAPD)
+	/* create the kswapd_threads file node */
+	ret = create_kswapd_threads_proc(oppo_healthinfo);
+	if (ret)
+		goto ERROR_INIT_VERSION;
+#endif
 #ifdef CONFIG_VIRTUAL_RESERVE_MEMORY
 	/* create vm_featurre file node */
 	ret = create_reserved_area_enable_proc(oppo_healthinfo);

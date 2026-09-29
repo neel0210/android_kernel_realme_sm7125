@@ -97,7 +97,7 @@ static struct oplus_chg_chip *g_charger_chip = NULL;
 
 #define OPLUS_CHG_DEFAULT_CHARGING_CURRENT	512
 
-int enable_charger_log = 0;
+int enable_charger_log = 2;
 int charger_abnormal_log = 0;
 int tbatt_pwroff_enable = 1;
 static int mcu_status = 0;
@@ -107,7 +107,7 @@ extern bool oplus_is_power_off_charging(struct oplus_vooc_chip *chip);
 #define charger_xlog_printk(num, fmt, ...) \
 		do { \
 			if (enable_charger_log >= (int)num) { \
-				pr_debug(KERN_NOTICE pr_fmt("[OPLUS_CHG][%s]"fmt), __func__, ##__VA_ARGS__); \
+				printk(KERN_NOTICE pr_fmt("[OPLUS_CHG][%s]"fmt), __func__, ##__VA_ARGS__); \
 			} \
 		} while (0)
 
@@ -631,7 +631,7 @@ int oplus_battery_get_property(struct power_supply *psy,
 			} else if (!chip->authenticate) {
 				val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
 			} else {
-				val->intval = chip->prop_status == POWER_SUPPLY_STATUS_NOT_CHARGING ? POWER_SUPPLY_STATUS_DISCHARGING : chip->prop_status;
+				val->intval = chip->prop_status;
 			}
 			break;
 		case POWER_SUPPLY_PROP_HEALTH:
@@ -6230,7 +6230,7 @@ static void oplus_chg_update_ui_soc(struct oplus_chg_chip *chip)
 		}
 	} else {
 		cnt = 0;
-		chip->prop_status = POWER_SUPPLY_STATUS_NOT_CHARGING;
+		chip->prop_status = POWER_SUPPLY_STATUS_DISCHARGING;
 		soc_up_count = 0;
 		if (chip->smooth_soc <= chip->ui_soc || vbatt_too_low) {
 			if (soc_down_count > soc_down_limit) {

@@ -94,11 +94,6 @@ static struct elevator_type *elevator_find(const char *name, bool mq)
 {
 	struct elevator_type *e;
 
-	/* Forbid init from changing I/O scheduler from default */
-	if (!strncmp(current->comm, "init", sizeof("init")))
-		return NULL;
-
-
 	list_for_each_entry(e, &elv_list, list) {
 		if (!strcmp(e->elevator_name, name) && (mq == e->uses_mq))
 			return e;
@@ -624,6 +619,13 @@ void elv_requeue_request(struct request_queue *q, struct request *rq)
 	 */
 	if (blk_account_rq(rq)) {
 		q->in_flight[rq_is_sync(rq)]--;
+#ifdef OPLUS_FEATURE_HEALTHINFO
+// jiheng.xie@PSW.Tech.BSP.Performance, 2019/03/11
+// Add for ioqueue
+#ifdef CONFIG_OPPO_HEALTHINFO
+		ohm_ioqueue_dec_inflight(q, rq);
+#endif
+#endif /* OPLUS_FEATURE_HEALTHINFO */
 		if (rq->rq_flags & RQF_SORTED)
 			elv_deactivate_rq(q, rq);
 	}
@@ -830,6 +832,13 @@ void elv_completed_request(struct request_queue *q, struct request *rq)
 	 */
 	if (blk_account_rq(rq)) {
 		q->in_flight[rq_is_sync(rq)]--;
+#ifdef OPLUS_FEATURE_HEALTHINFO
+// jiheng.xie@PSW.Tech.BSP.Performance, 2019/03/11
+// Add for ioqueue
+#ifdef CONFIG_OPPO_HEALTHINFO
+		ohm_ioqueue_dec_inflight(q, rq);
+#endif
+#endif /* OPLUS_FEATURE_HEALTHINFO */
 		if ((rq->rq_flags & RQF_SORTED) &&
 		    e->type->ops.sq.elevator_completed_req_fn)
 			e->type->ops.sq.elevator_completed_req_fn(q, rq);

@@ -247,8 +247,8 @@ static int __init default_bdi_init(void)
 {
 	int err;
 
-	bdi_wq = alloc_workqueue("writeback", WQ_MEM_RECLAIM | WQ_UNBOUND |
-				 WQ_SYSFS, 0);
+	bdi_wq = alloc_workqueue("writeback", WQ_MEM_RECLAIM | WQ_FREEZABLE |
+					      WQ_UNBOUND | WQ_SYSFS, 0);
 	if (!bdi_wq)
 		return -ENOMEM;
 
@@ -877,13 +877,9 @@ int bdi_register_va(struct backing_dev_info *bdi, const char *fmt, va_list args)
 	if (bdi->dev)	/* The driver needs to use separate queues per device */
 		return 0;
 
-	bdi_get(bdi);
-
 	dev = device_create_vargs(bdi_class, NULL, MKDEV(0, 0), bdi, fmt, args);
-	if (IS_ERR(dev)) {
-		bdi_put(bdi);
+	if (IS_ERR(dev))
 		return PTR_ERR(dev);
-	}
 
 	cgwb_bdi_register(bdi);
 	bdi->dev = dev;
@@ -963,8 +959,6 @@ void bdi_unregister(struct backing_dev_info *bdi)
 		put_device(bdi->owner);
 		bdi->owner = NULL;
 	}
-
-	bdi_put(bdi);
 }
 
 static void release_bdi(struct kref *ref)

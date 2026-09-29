@@ -37,6 +37,7 @@
 #include <linux/security.h>
 #include <linux/smp.h>
 #include <linux/profile.h>
+#include <linux/kfence.h>
 #include <linux/rcupdate.h>
 #include <linux/moduleparam.h>
 #include <linux/kallsyms.h>
@@ -77,7 +78,7 @@
 #include <linux/pti.h>
 #include <linux/blkdev.h>
 #include <linux/elevator.h>
-#include <linux/sched/clock.h>
+#include <linux/sched_clock.h>
 #include <linux/sched/task.h>
 #include <linux/sched/task_stack.h>
 #include <linux/context_tracking.h>
@@ -101,6 +102,8 @@
 // Kun.Hu@TECH.BSP.Stability.PHOENIX_PROJECT 2019/06/11, Add for phoenix project
 #include "../drivers/soc/oplus/system/oppo_phoenix/oppo_phoenix.h"
 //#endif  //OPLUS_FEATURE_PHOENIX
+#define CREATE_TRACE_POINTS
+#include <trace/events/initcall.h>
 
 static int kernel_init(void *);
 
@@ -493,6 +496,31 @@ void __init __weak thread_stack_cache_init(void)
 }
 #endif
 
+/* Report memory auto-initialization states for this boot. */
+static void __init report_meminit(void)
+{
+	const char *stack;
+
+	if (IS_ENABLED(CONFIG_INIT_STACK_ALL_PATTERN))
+		stack = "all(pattern)";
+	else if (IS_ENABLED(CONFIG_INIT_STACK_ALL_ZERO))
+		stack = "all(zero)";
+	else if (IS_ENABLED(CONFIG_GCC_PLUGIN_STRUCTLEAK_BYREF_ALL))
+		stack = "byref_all(zero)";
+	else if (IS_ENABLED(CONFIG_GCC_PLUGIN_STRUCTLEAK_BYREF))
+		stack = "byref(zero)";
+	else if (IS_ENABLED(CONFIG_GCC_PLUGIN_STRUCTLEAK_USER))
+		stack = "__user(zero)";
+	else
+		stack = "off";
+
+	pr_info("mem auto-init: stack:%s, heap alloc:%s, heap free:%s\n",
+		stack, want_init_on_alloc(GFP_KERNEL) ? "on" : "off",
+		want_init_on_free() ? "on" : "off");
+	if (want_init_on_free())
+		pr_info("mem auto-init: clearing system memory may take some time...\n");
+}
+
 /*
  * Set up kernel memory allocators
  */
@@ -503,6 +531,8 @@ static void __init mm_init(void)
 	 * bigger than MAX_ORDER unless SPARSEMEM.
 	 */
 	page_ext_init_flatmem();
+	kfence_alloc_pool();
+	report_meminit();
 	mem_init();
 	kmem_cache_init();
 	pgtable_init();
@@ -514,8 +544,6 @@ static void __init mm_init(void)
 	pti_init();
 }
 
-void __init init_sync_kmem_pool(void);
-void __init init_dma_buf_kmem_pool(void);
 asmlinkage __visible void __init start_kernel(void)
 {
 	char *command_line;
@@ -559,6 +587,9 @@ asmlinkage __visible void __init start_kernel(void)
 	if (!IS_ERR_OR_NULL(after_dashes))
 		parse_args("Setting init args", after_dashes, NULL, 0, -1, -1,
 			   NULL, set_init_arg);
+
+	/* Architectural and non-timekeeping rng init, before allocator init */
+	random_init_early(command_line);
 
 	/*
 	 * These use large bootmem allocations and must precede
@@ -622,17 +653,14 @@ asmlinkage __visible void __init start_kernel(void)
 	timekeeping_init();
 	time_init();
 
-	/*
-	 * For best initial stack canary entropy, prepare it after:
-	 * - setup_arch() for any UEFI RNG entropy and boot cmdline access
-	 * - timekeeping_init() for ktime entropy used in random_init()
-	 * - time_init() for making random_get_entropy() work on some platforms
-	 * - random_init() to initialize the RNG from from early entropy sources
-	 */
-	random_init(command_line);
+	/* This must be after timekeeping is initialized */
+	random_init();
+
+	/* These make use of the fully initialized rng */
+	kfence_init();
 	boot_init_stack_canary();
 
-	sched_clock_init();
+	sched_clock_postinit();
 	printk_safe_init();
 	perf_event_init();
 	profile_init();
@@ -686,7 +714,7 @@ asmlinkage __visible void __init start_kernel(void)
 
 	arch_cpu_finalize_init();
 
-	pidmap_init();
+	pid_idr_init();
 	anon_vma_init();
 	acpi_early_init();
 #ifdef CONFIG_X86
@@ -710,9 +738,12 @@ asmlinkage __visible void __init start_kernel(void)
 	cgroup_init();
 	taskstats_init_early();
 	delayacct_init();
-	init_sync_kmem_pool();
-	init_dma_buf_kmem_pool();
 
+//#ifdef OPLUS_FEATURE_PHOENIX
+	// Kun.Hu@PSW.TECH.RELIABILTY, 2018/11/15, add for project phoenix(hang oppo)
+	if(phx_set_boot_stage)
+		phx_set_boot_stage(KERNEL_DELAYACCT_INIT_DONE);
+//#endif
 
 	acpi_subsystem_init();
 	arch_post_acpi_subsys_init();
@@ -838,10 +869,12 @@ int __init_or_module do_one_initcall(initcall_t fn)
 	if (initcall_blacklisted(fn))
 		return -EPERM;
 
+	trace_initcall_start(fn);
 	if (initcall_debug)
 		ret = do_one_initcall_debug(fn);
 	else
 		ret = fn();
+	trace_initcall_finish(fn, ret);
 
 	msgbuf[0] = 0;
 
@@ -860,18 +893,18 @@ int __init_or_module do_one_initcall(initcall_t fn)
 }
 
 
-extern initcall_t __initcall_start[];
-extern initcall_t __initcall0_start[];
-extern initcall_t __initcall1_start[];
-extern initcall_t __initcall2_start[];
-extern initcall_t __initcall3_start[];
-extern initcall_t __initcall4_start[];
-extern initcall_t __initcall5_start[];
-extern initcall_t __initcall6_start[];
-extern initcall_t __initcall7_start[];
-extern initcall_t __initcall_end[];
+extern initcall_entry_t __initcall_start[];
+extern initcall_entry_t __initcall0_start[];
+extern initcall_entry_t __initcall1_start[];
+extern initcall_entry_t __initcall2_start[];
+extern initcall_entry_t __initcall3_start[];
+extern initcall_entry_t __initcall4_start[];
+extern initcall_entry_t __initcall5_start[];
+extern initcall_entry_t __initcall6_start[];
+extern initcall_entry_t __initcall7_start[];
+extern initcall_entry_t __initcall_end[];
 
-static initcall_t *initcall_levels[] __initdata = {
+static initcall_entry_t *initcall_levels[] __initdata = {
 	__initcall0_start,
 	__initcall1_start,
 	__initcall2_start,
@@ -897,7 +930,7 @@ static char *initcall_level_names[] __initdata = {
 
 static void __init do_initcall_level(int level)
 {
-	initcall_t *fn;
+	initcall_entry_t *fn;
 
 	strcpy(initcall_command_line, saved_command_line);
 	parse_args(initcall_level_names[level],
@@ -906,8 +939,9 @@ static void __init do_initcall_level(int level)
 		   level, level,
 		   NULL, &repair_env_string);
 
+	trace_initcall_level(initcall_level_names[level]);
 	for (fn = initcall_levels[level]; fn < initcall_levels[level+1]; fn++)
-		do_one_initcall(*fn);
+		do_one_initcall(initcall_from_entry(fn));
 }
 
 static void __init do_initcalls(void)
@@ -948,10 +982,11 @@ static void __init do_basic_setup(void)
 
 static void __init do_pre_smp_initcalls(void)
 {
-	initcall_t *fn;
+	initcall_entry_t *fn;
 
+	trace_initcall_level("early");
 	for (fn = __initcall_start; fn < __initcall0_start; fn++)
-		do_one_initcall(*fn);
+		do_one_initcall(initcall_from_entry(fn));
 }
 
 /*

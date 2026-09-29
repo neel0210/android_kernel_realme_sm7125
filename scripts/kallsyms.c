@@ -28,7 +28,7 @@
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
 #endif
 
-#define KSYM_NAME_LEN		256
+#define KSYM_NAME_LEN		192
 
 struct sym_entry {
 	unsigned long long addr;
@@ -285,30 +285,6 @@ static int symbol_valid(struct sym_entry *s)
 	return 1;
 }
 
-/* remove all the invalid symbols from the table */
-static void shrink_table(void)
-{
-	unsigned int i, pos;
-
-	pos = 0;
-	for (i = 0; i < table_cnt; i++) {
-		if (symbol_valid(&table[i])) {
-			if (pos != i)
-				table[pos] = table[i];
-			pos++;
-		} else {
-			free(table[i].sym);
-		}
-	}
-	table_cnt = pos;
-
-	/* When valid symbol is not registered, exit to error */
-	if (!table_cnt) {
-		fprintf(stderr, "No valid symbol.\n");
-		exit(1);
-	}
-}
-
 static void read_map(FILE *in)
 {
 	while (!feof(in)) {
@@ -522,13 +498,23 @@ static void forget_symbol(unsigned char *symbol, int len)
 		token_profit[ symbol[i] + (symbol[i + 1] << 8) ]--;
 }
 
-/* do the initial token count */
+/* remove all the invalid symbols from the table and do the initial token count */
 static void build_initial_tok_table(void)
 {
-	unsigned int i;
+	unsigned int i, pos;
 
-	for (i = 0; i < table_cnt; i++)
-		learn_symbol(table[i].sym, table[i].len);
+	pos = 0;
+	for (i = 0; i < table_cnt; i++) {
+		if ( symbol_valid(&table[i]) ) {
+			if (pos != i)
+				table[pos] = table[i];
+			learn_symbol(table[pos].sym, table[pos].len);
+			pos++;
+		} else {
+			free(table[i].sym);
+		}
+	}
+	table_cnt = pos;
 }
 
 static void *find_token(unsigned char *str, int len, unsigned char *token)
@@ -653,6 +639,12 @@ static void optimize_token_table(void)
 	build_initial_tok_table();
 
 	insert_real_symbols_in_table();
+
+	/* When valid symbol is not registered, exit to error */
+	if (!table_cnt) {
+		fprintf(stderr, "No valid symbol.\n");
+		exit(1);
+	}
 
 	optimize_result();
 }
@@ -796,7 +788,6 @@ int main(int argc, char **argv)
 		usage();
 
 	read_map(stdin);
-	shrink_table();
 	if (absolute_percpu)
 		make_percpus_absolute();
 	if (base_relative)

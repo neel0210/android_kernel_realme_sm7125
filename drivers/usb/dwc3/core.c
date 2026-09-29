@@ -394,6 +394,13 @@ static void dwc3_free_event_buffers(struct dwc3 *dwc)
 static int dwc3_alloc_event_buffers(struct dwc3 *dwc, unsigned length)
 {
 	struct dwc3_event_buffer *evt;
+	unsigned int hw_mode;
+
+	hw_mode = DWC3_GHWPARAMS0_MODE(dwc->hwparams.hwparams0);
+	if (hw_mode == DWC3_GHWPARAMS0_MODE_HOST) {
+		dwc->ev_buf = NULL;
+		return 0;
+	}
 
 	evt = dwc3_alloc_one_event_buffer(dwc, length);
 	if (IS_ERR(evt)) {
@@ -417,6 +424,9 @@ int dwc3_event_buffers_setup(struct dwc3 *dwc)
 {
 	struct dwc3_event_buffer	*evt;
 
+	if (!dwc->ev_buf)
+		return 0;
+
 	evt = dwc->ev_buf;
 	evt->lpos = 0;
 	dwc3_writel(dwc->regs, DWC3_GEVNTADRLO(0),
@@ -435,6 +445,17 @@ int dwc3_event_buffers_setup(struct dwc3 *dwc)
 static void dwc3_event_buffers_cleanup(struct dwc3 *dwc)
 {
 	struct dwc3_event_buffer	*evt;
+	u32				reg;
+
+	if (!dwc->ev_buf)
+		return;
+	/*
+	 * Exynos platforms may not be able to access event buffer if the
+	 * controller failed to halt on dwc3_core_exit().
+	 */
+	reg = dwc3_readl(dwc->regs, DWC3_DSTS);
+	if (!(reg & DWC3_DSTS_DEVCTRLHLT))
+		return;
 
 	evt = dwc->ev_buf;
 
@@ -725,12 +746,12 @@ static void dwc3_core_exit(struct dwc3 *dwc)
 	phy_power_off(dwc->usb2_generic_phy);
 	phy_power_off(dwc->usb3_generic_phy);
 
-        usb_phy_shutdown(dwc->usb2_phy1);
-        usb_phy_shutdown(dwc->usb2_phy);
-        usb_phy_shutdown(dwc->usb3_phy1);
-        usb_phy_shutdown(dwc->usb3_phy);
-        phy_exit(dwc->usb2_generic_phy);
-        phy_exit(dwc->usb3_generic_phy);
+	usb_phy_shutdown(dwc->usb2_phy1);
+	usb_phy_shutdown(dwc->usb2_phy);
+	usb_phy_shutdown(dwc->usb3_phy1);
+	usb_phy_shutdown(dwc->usb3_phy);
+	phy_exit(dwc->usb2_generic_phy);
+	phy_exit(dwc->usb3_generic_phy);
 }
 
 static bool dwc3_core_is_valid(struct dwc3 *dwc)
@@ -1466,14 +1487,14 @@ static int dwc3_probe(struct platform_device *pdev)
 	dwc->dwc_ipc_log_ctxt = ipc_log_context_create(NUM_LOG_PAGES,
 					dev_name(dwc->dev), 0);
 	if (!dwc->dwc_ipc_log_ctxt)
-		dev_dbg(dwc->dev, "Error getting ipc_log_ctxt\n");
+		dev_err(dwc->dev, "Error getting ipc_log_ctxt\n");
 
 	snprintf(dma_ipc_log_ctx_name, sizeof(dma_ipc_log_ctx_name),
 					"%s.ep_events", dev_name(dwc->dev));
 	dwc->dwc_dma_ipc_log_ctxt = ipc_log_context_create(NUM_LOG_PAGES,
 						dma_ipc_log_ctx_name, 0);
 	if (!dwc->dwc_dma_ipc_log_ctxt)
-		dev_dbg(dwc->dev, "Error getting ipc_log_ctxt for ep_events\n");
+		dev_err(dwc->dev, "Error getting ipc_log_ctxt for ep_events\n");
 
 	dwc3_instance[count] = dwc;
 	dwc->index = count;
@@ -1481,7 +1502,9 @@ static int dwc3_probe(struct platform_device *pdev)
 
 	pm_runtime_allow(dev);
 	dwc3_debugfs_init(dwc);
+
 	dma_set_max_seg_size(dev, UINT_MAX);
+
 	return 0;
 
 err3:
@@ -1515,14 +1538,13 @@ static int dwc3_remove(struct platform_device *pdev)
 	 */
 	res->start -= DWC3_GLOBALS_REGS_START;
 
-	dwc3_core_exit_mode(dwc);
 	dwc3_debugfs_exit(dwc);
-
-	dwc3_core_exit(dwc);
-	dwc3_ulpi_exit(dwc);
+	dwc3_gadget_exit(dwc);
 
 	pm_runtime_allow(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
+	pm_runtime_put_noidle(&pdev->dev);
+	pm_runtime_set_suspended(&pdev->dev);
 
 	dwc3_free_event_buffers(dwc);
 	dwc3_free_scratch_buffers(dwc);
@@ -1767,7 +1789,6 @@ static struct platform_driver dwc3_driver = {
 		.of_match_table	= of_match_ptr(of_dwc3_match),
 		.acpi_match_table = ACPI_PTR(dwc3_acpi_match),
 		.pm	= &dwc3_dev_pm_ops,
-		.probe_type = PROBE_FORCE_SYNCHRONOUS,
 	},
 };
 

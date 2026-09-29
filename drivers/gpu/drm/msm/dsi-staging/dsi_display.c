@@ -1663,7 +1663,7 @@ static int dsi_display_debugfs_init(struct dsi_display *display)
 	dir = debugfs_create_dir(display->name, NULL);
 	if (IS_ERR_OR_NULL(dir)) {
 		rc = PTR_ERR(dir);
-		pr_debug("[%s] debugfs create dir failed, rc = %d\n",
+		pr_err("[%s] debugfs create dir failed, rc = %d\n",
 		       display->name, rc);
 		goto error;
 	}
@@ -5020,10 +5020,8 @@ static int dsi_display_link_clk_force_update_ctrl(void *handle)
 	return rc;
 }
 
-int dsi_display_clk_ctrl(void *handle, u32 type, u32 state)
+int dsi_display_clk_ctrl(void *handle, u32 clk_type, u32 clk_state)
 {
-	enum dsi_clk_type clk_type = (enum dsi_clk_type)type;
-	enum dsi_clk_state clk_state = (enum dsi_clk_state)state;
 	int rc = 0;
 
 	if (!handle) {
@@ -5180,22 +5178,10 @@ error:
 	return rc;
 }
 
-static struct attribute *display_fs_attrs[] = {
-	NULL,
-};
-
-static struct attribute_group display_fs_attrs_group = {
-	.attrs = display_fs_attrs,
-};
-
 static int dsi_display_sysfs_init(struct dsi_display *display)
 {
 	int rc = 0;
 	struct device *dev = &display->pdev->dev;
-
-	rc = sysfs_create_group(&dev->kobj, &display_fs_attrs_group);
-	if (rc)
-		pr_err("failed to create display device attributes");
 
 	if (display->panel->panel_mode == DSI_OP_CMD_MODE)
 		rc = sysfs_create_group(&dev->kobj,
@@ -5301,7 +5287,11 @@ static int dsi_display_bind(struct device *dev,
 		goto error;
 	}
 
-	dsi_display_debugfs_init(display);
+	rc = dsi_display_debugfs_init(display);
+	if (rc) {
+		pr_err("[%s] debugfs init failed, rc=%d\n", display->name, rc);
+		goto error;
+	}
 
 	atomic_set(&display->clkrate_change_pending, 0);
 	display->cached_clk_rate = 0;
@@ -5715,6 +5705,10 @@ int dsi_display_dev_remove(struct platform_device *pdev)
 	}
 
 	display = platform_get_drvdata(pdev);
+	if (!display || !display->disp_node) {
+		pr_err("invalid display\n");
+		return -EINVAL;
+	}
 
 	/* decrement ref count */
 	of_node_put(display->disp_node);
@@ -7303,17 +7297,20 @@ int dsi_display_prepare(struct dsi_display *display)
 	dsi_display_ctrl_isr_configure(display, true);
 
 	if (mode->dsi_mode_flags & DSI_MODE_FLAG_DMS) {
-		if (display->is_cont_splash_enabled) {
-			pr_err("DMS is not supposed to be set on first frame\n");
+		if (display->is_cont_splash_enabled &&
+		    display->config.panel_mode == DSI_OP_VIDEO_MODE) {
+			pr_err("DMS not supported on first frame\n");
 			rc = -EINVAL;
 			goto error;
 		}
-		/* update dsi ctrl for new mode */
-		rc = dsi_display_pre_switch(display);
-		if (rc)
-			pr_err("[%s] panel pre-prepare-res-switch failed, rc=%d\n",
+		if (!display->is_cont_splash_enabled) {
+			/* update dsi ctrl for new mode */
+			rc = dsi_display_pre_switch(display);
+			if (rc)
+				pr_err("[%s] panel pre-switch failed, rc=%d\n",
 					display->name, rc);
-		goto error;
+			goto error;
+		}
 	}
 
 	if (!(mode->dsi_mode_flags & DSI_MODE_FLAG_POMS) &&

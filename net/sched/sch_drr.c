@@ -125,7 +125,7 @@ static int drr_change_class(struct Qdisc *sch, u32 classid, u32 parentid,
 					    qdisc_root_sleeping_running(sch),
 					    tca[TCA_RATE]);
 		if (err) {
-			qdisc_destroy(cl->qdisc);
+			qdisc_put(cl->qdisc);
 			kfree(cl);
 			return err;
 		}
@@ -144,7 +144,7 @@ static int drr_change_class(struct Qdisc *sch, u32 classid, u32 parentid,
 static void drr_destroy_class(struct Qdisc *sch, struct drr_class *cl)
 {
 	gen_kill_estimator(&cl->rate_est);
-	qdisc_destroy(cl->qdisc);
+	qdisc_put(cl->qdisc);
 	kfree(cl);
 }
 
@@ -321,7 +321,6 @@ static struct drr_class *drr_classify(struct sk_buff *skb, struct Qdisc *sch,
 		case TC_ACT_STOLEN:
 		case TC_ACT_TRAP:
 			*qerr = NET_XMIT_SUCCESS | __NET_XMIT_STOLEN;
-			/* fall through */
 		case TC_ACT_SHOT:
 			return NULL;
 		}
@@ -413,7 +412,7 @@ static int drr_init_qdisc(struct Qdisc *sch, struct nlattr *opt)
 	struct drr_sched *q = qdisc_priv(sch);
 	int err;
 
-	err = tcf_block_get(&q->block, &q->filter_list, sch);
+	err = tcf_block_get(&q->block, &q->filter_list);
 	if (err)
 		return err;
 	err = qdisc_class_hash_init(&q->clhash);

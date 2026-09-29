@@ -1,4 +1,5 @@
 /* Copyright (c) 2008-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -83,6 +84,11 @@
 #define SCRATCH_RPTR_GPU_ADDR(dev, id) \
 	((dev)->scratch.gpuaddr + SCRATCH_RPTR_OFFSET(id))
 
+/* OFFSET to KMD postamble packets in scratch buffer */
+#define SCRATCH_POSTAMBLE_OFFSET (100 * sizeof(u64))
+#define SCRATCH_POSTAMBLE_ADDR(dev) \
+	((dev)->scratch.gpuaddr + SCRATCH_POSTAMBLE_OFFSET)
+
 /* Timestamp window used to detect rollovers (half of integer range) */
 #define KGSL_TIMESTAMP_WINDOW 0x80000000
 
@@ -103,8 +109,25 @@ static inline void KGSL_STATS_ADD(uint64_t size, atomic_long_t *stat,
 #define KGSL_MAX_SYNCPOINTS 32
 #define KGSL_MAX_SPARSE 1000
 
+struct gpu_work_period {
+	struct kref refcount;
+	struct list_head list;
+	struct list_head put_node;
+	uid_t uid;
+	u64 active;
+	unsigned long flags;
+	atomic_t active_cmds;
+};
+
+#define KGSL_WORK_PERIOD 0
+#define KGSL_WORK_PERIOD_MS 900
+
 struct kgsl_device;
 struct kgsl_context;
+void kgsl_work_period_update(struct kgsl_device *device,
+		struct gpu_work_period *period, u64 active);
+void kgsl_work_period_start(struct kgsl_device *device,
+		struct gpu_work_period *period);
 
 /**
  * struct kgsl_driver - main container for global KGSL things
@@ -119,7 +142,6 @@ struct kgsl_context;
  * @pagetable_list: LIst of open pagetables
  * @ptlock: Lock for accessing the pagetable list
  * @process_mutex: Mutex for accessing the process list
- * @proclist_lock: Lock for accessing the process list
  * @devlock: Mutex protecting the device list
  * @stats: Struct containing atomic memory statistics
  * @full_cache_threshold: the threshold that triggers a full cache flush
@@ -127,6 +149,8 @@ struct kgsl_context;
  * @mem_workqueue: Pointer to a workqueue for deferring memory entries
  */
 struct kgsl_driver {
+	struct list_head wp_list;
+	spinlock_t wp_list_lock;
 	struct cdev cdev;
 	dev_t major;
 	struct class *class;
@@ -138,7 +162,6 @@ struct kgsl_driver {
 	struct list_head pagetable_list;
 	spinlock_t ptlock;
 	struct mutex process_mutex;
-	spinlock_t proclist_lock;
 	struct mutex devlock;
 	struct {
 		atomic_long_t vmalloc;
@@ -205,7 +228,6 @@ struct kgsl_memdesc_ops {
  * @gpuaddr: GPU virtual address
  * @physaddr: Physical address of the memory object
  * @size: Size of the memory object
- * @pad_to: Size that we pad the memdesc to
  * @priv: Internal flags and settings
  * @sgt: Scatter gather table for allocated pages
  * @ops: Function hooks for the memdesc memory type
@@ -223,7 +245,6 @@ struct kgsl_memdesc {
 	uint64_t gpuaddr;
 	phys_addr_t physaddr;
 	uint64_t size;
-	uint64_t pad_to;
 	unsigned int priv;
 	struct sg_table *sgt;
 	struct kgsl_memdesc_ops *ops;
@@ -308,7 +329,7 @@ typedef void (*kgsl_event_func)(struct kgsl_device *, struct kgsl_event_group *,
  * @priv: Private data passed to the callback function
  * @node: List node for the kgsl_event_group list
  * @created: Jiffies when the event was created
- * @work: Work struct for dispatching the callback
+ * @work: kthread_work struct for dispatching the callback
  * @result: KGSL event result type to pass to the callback
  * group: The event group this event belongs to
  */
@@ -469,6 +490,9 @@ struct kgsl_mem_entry *gpumem_alloc_entry(struct kgsl_device_private *dev_priv,
 				uint64_t size, uint64_t flags);
 long gpumem_free_entry(struct kgsl_mem_entry *entry);
 
+/* Helper functions */
+unsigned long kgsl_get_align(struct kgsl_memdesc *memdesc);
+
 static inline int kgsl_gpuaddr_in_memdesc(const struct kgsl_memdesc *memdesc,
 				uint64_t gpuaddr, uint64_t size)
 {
@@ -556,16 +580,6 @@ kgsl_mem_entry_put(struct kgsl_mem_entry *entry)
 	if (entry)
 		kref_put(&entry->refcount, kgsl_mem_entry_destroy);
 }
-
-/**
- * kgsl_mem_entry_put_deferred() - Puts refcount and triggers deferred
- * mem_entry destroy when refcount is the last refcount.
- * @entry: memory entry to be put.
- *
- * Use this to put a memory entry when we don't want to block
- * the caller while destroying memory entry.
- */
-void kgsl_mem_entry_put_deferred(struct kgsl_mem_entry *entry);
 
 /*
  * kgsl_addr_range_overlap() - Checks if 2 ranges overlap

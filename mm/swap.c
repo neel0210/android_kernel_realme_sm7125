@@ -479,12 +479,12 @@ void add_page_to_unevictable_list(struct page *page)
  * directly back onto it's zone's unevictable list, it does NOT use a
  * per cpu pagevec.
  */
-void __lru_cache_add_active_or_unevictable(struct page *page,
-					   unsigned long vma_flags)
+void lru_cache_add_active_or_unevictable(struct page *page,
+					 struct vm_area_struct *vma)
 {
 	VM_BUG_ON_PAGE(PageLRU(page), page);
 
-	if (likely((vma_flags & (VM_LOCKED | VM_SPECIAL)) != VM_LOCKED)) {
+	if (likely((vma->vm_flags & (VM_LOCKED | VM_SPECIAL)) != VM_LOCKED)) {
 		SetPageActive(page);
 		lru_cache_add(page);
 		return;
@@ -1010,18 +1010,10 @@ EXPORT_SYMBOL(pagevec_lookup_range_nr_tag);
  */
 void __init swap_setup(void)
 {
-	unsigned long megs = totalram_pages >> (20 - PAGE_SHIFT);
-
-	/* Use a smaller cluster for small-memory machines */
-	if (megs < 16)
-		page_cluster = 2;
-	else
-		page_cluster = 3;
 	/*
-	 * Right now other parts of the system means that we
-	 * _really_ don't want to cluster much more
+	 * Swap lives on zram on this device: there is no seek cost, so
+	 * swap readahead only wastes memory bandwidth and CPU decompressing
+	 * pages that are never used. Disable it regardless of RAM size.
 	 */
-#ifdef CONFIG_OPLUS_MM_HACKS
 	page_cluster = 0;
-#endif /* CONFIG_OPLUS_MM_HACKS */
 }

@@ -2204,7 +2204,7 @@ static void free_module(struct module *mod)
 	/* Remove this module from bug list, this uses list_del_rcu */
 	module_bug_cleanup(mod);
 	/* Wait for RCU-sched synchronizing before releasing mod->list and buglist. */
-	synchronize_rcu();
+	synchronize_sched();
 	mutex_unlock(&module_mutex);
 
 	/* This may be empty, but that's OK */
@@ -2963,8 +2963,7 @@ static int copy_module_from_user(const void __user *umod, unsigned long len,
 		return err;
 
 	/* Suck in entire file: we'll want most of it. */
-	info->hdr = __vmalloc(info->len,
-			GFP_KERNEL | __GFP_NOWARN, PAGE_KERNEL);
+	info->hdr = __vmalloc(info->len, GFP_KERNEL | __GFP_NOWARN);
 	if (!info->hdr)
 		return -ENOMEM;
 
@@ -3181,6 +3180,11 @@ static int find_module_sections(struct module *mod, struct load_info *info)
 					     sizeof(*mod->tracepoints_ptrs),
 					     &mod->num_tracepoints);
 #endif
+#ifdef CONFIG_BPF_EVENTS
+	mod->bpf_raw_events = section_objs(info, "__bpf_raw_tp_map",
+					   sizeof(*mod->bpf_raw_events),
+					   &mod->num_bpf_raw_events);
+#endif
 #ifdef HAVE_JUMP_LABEL
 	mod->jump_entries = section_objs(info, "__jump_table",
 					sizeof(*mod->jump_entries),
@@ -3205,7 +3209,11 @@ static int find_module_sections(struct module *mod, struct load_info *info)
 					     sizeof(*mod->ftrace_callsites),
 					     &mod->num_ftrace_callsites);
 #endif
-
+#ifdef CONFIG_FUNCTION_ERROR_INJECTION
+	mod->ei_funcs = section_objs(info, "_error_injection_whitelist",
+					    sizeof(*mod->ei_funcs),
+					    &mod->num_ei_funcs);
+#endif
 	mod->extable = section_objs(info, "__ex_table",
 				    sizeof(*mod->extable), &mod->num_exentries);
 
@@ -3589,15 +3597,15 @@ static noinline int do_init_module(struct module *mod)
 	/*
 	 * We want to free module_init, but be aware that kallsyms may be
 	 * walking this with preempt disabled.  In all the failure paths, we
-	 * call synchronize_rcu(), but we don't want to slow down the success
+	 * call synchronize_sched(), but we don't want to slow down the success
 	 * path, so use actual RCU here.
 	 * Note that module_alloc() on most architectures creates W+X page
 	 * mappings which won't be cleaned up until do_free_init() runs.  Any
 	 * code such as mark_rodata_ro() which depends on those mappings to
 	 * be cleaned up needs to sync with the queued work - ie
-	 * rcu_barrier()
+	 * rcu_barrier_sched()
 	 */
-	call_rcu(&freeinit->rcu, do_free_init);
+	call_rcu_sched(&freeinit->rcu, do_free_init);
 	mutex_unlock(&module_mutex);
 	wake_up_all(&module_wq);
 
@@ -3608,7 +3616,7 @@ fail_free_freeinit:
 fail:
 	/* Try to protect us from buggy refcounters. */
 	mod->state = MODULE_STATE_GOING;
-	synchronize_rcu();
+	synchronize_sched();
 	module_put(mod);
 	blocking_notifier_call_chain(&module_notify_list,
 				     MODULE_STATE_GOING, mod);
@@ -3896,7 +3904,7 @@ static int load_module(struct load_info *info, const char __user *uargs,
 
  ddebug_cleanup:
 	dynamic_debug_remove(mod, info->debug);
-	synchronize_rcu();
+	synchronize_sched();
 	kfree(mod->args);
  free_arch_cleanup:
 	module_arch_cleanup(mod);
@@ -3911,7 +3919,7 @@ static int load_module(struct load_info *info, const char __user *uargs,
 	mod_tree_remove(mod);
 	wake_up_all(&module_wq);
 	/* Wait for RCU-sched synchronizing before releasing mod->list. */
-	synchronize_rcu();
+	synchronize_sched();
 	mutex_unlock(&module_mutex);
  free_module:
 	/*
@@ -4221,10 +4229,10 @@ int module_kallsyms_on_each_symbol(int (*fn)(void *, const char *,
 static void cfi_init(struct module *mod)
 {
 #ifdef CONFIG_CFI_CLANG
-	preempt_disable();
+	rcu_read_lock_sched();
 	mod->cfi_check =
 		(cfi_check_fn)mod_find_symname(mod, CFI_CHECK_FN_NAME);
-	preempt_enable();
+	rcu_read_unlock_sched();
 	cfi_module_add(mod, module_addr_min, module_addr_max);
 #endif
 }
@@ -4285,6 +4293,7 @@ static int m_show(struct seq_file *m, void *p)
 {
 	struct module *mod = list_entry(p, struct module, list);
 	char buf[MODULE_FLAGS_BUF_SIZE];
+	unsigned long value;
 
 	/* We always ignore unformed modules. */
 	if (mod->state == MODULE_STATE_UNFORMED)
@@ -4300,7 +4309,8 @@ static int m_show(struct seq_file *m, void *p)
 		   mod->state == MODULE_STATE_COMING ? "Loading" :
 		   "Live");
 	/* Used by oprofile and other similar tools. */
-	seq_printf(m, " 0x%pK", mod->core_layout.base);
+	value = m->private ? 0 : (unsigned long)mod->core_layout.base;
+	seq_printf(m, " 0x" KALLSYM_FMT, value);
 
 	/* Taints info */
 	if (mod->taints)
@@ -4322,9 +4332,23 @@ static const struct seq_operations modules_op = {
 	.show	= m_show
 };
 
+/*
+ * This also sets the "private" pointer to non-NULL if the
+ * kernel pointers should be hidden (so you can just test
+ * "m->private" to see if you should keep the values private).
+ *
+ * We use the same logic as for /proc/kallsyms.
+ */
 static int modules_open(struct inode *inode, struct file *file)
 {
-	return seq_open(file, &modules_op);
+	int err = seq_open(file, &modules_op);
+
+	if (!err) {
+		struct seq_file *m = file->private_data;
+		m->private = kallsyms_show_value(current_cred()) ? NULL : (void *)8ul;
+	}
+
+	return 0;
 }
 
 static const struct file_operations proc_modules_operations = {

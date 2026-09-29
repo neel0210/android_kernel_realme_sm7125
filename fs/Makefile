@@ -135,8 +135,4 @@ obj-y				+= exofs/ # Multiple modules
 obj-$(CONFIG_CEPH_FS)		+= ceph/
 obj-$(CONFIG_PSTORE)		+= pstore/
 obj-$(CONFIG_EFIVAR_FS)		+= efivarfs/
-#ifdef OPLUS_FEATURE_EXFAT_SUPPORT
-#huyu@BSP.Driver, 2020/08/13, Add for exfat filesystem
-obj-$(CONFIG_EXFAT_FS)		+= exfat/
-#endif /*OPLUS_FEATURE_EXFAT_SUPPORT*/
-obj-$(CONFIG_DYNAMIC_FSYNC)	+= dyn_sync_cntrl.o
+obj-$(CONFIG_EROFS_FS)		+= erofs/

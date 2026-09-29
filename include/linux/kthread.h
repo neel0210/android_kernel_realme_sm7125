@@ -52,25 +52,6 @@ bool kthread_is_per_cpu(struct task_struct *k);
 	__k;								   \
 })
 
-/**
- * kthread_run_perf_critical - create and wake a performance-critical thread.
- *
- * Same as kthread_create(), but takes a perf cpumask to affine to.
- */
-#define kthread_run_perf_critical(perfmask, threadfn, data, namefmt, ...)  \
-({									   \
-	struct task_struct *__k						   \
-		= kthread_create(threadfn, data, namefmt, ## __VA_ARGS__); \
-	if (!IS_ERR(__k)) {						   \
-		__k->flags |= PF_PERF_CRITICAL;				   \
-		BUILD_BUG_ON(perfmask != cpu_lp_mask &&			   \
-				perfmask != cpu_perf_mask);		   \
-		kthread_bind_mask(__k, perfmask);			   \
-		wake_up_process(__k);					   \
-	}								   \
-	__k;								   \
-})
-
 void free_kthread_struct(struct task_struct *k);
 void kthread_bind(struct task_struct *k, unsigned int cpu);
 void kthread_bind_mask(struct task_struct *k, const struct cpumask *mask);
@@ -191,19 +172,6 @@ extern void __kthread_init_worker(struct kthread_worker *worker,
 			      (unsigned long)(dwork),			\
 			      TIMER_IRQSAFE);				\
 	} while (0)
-
-/*
- * Returns true when the work could not be queued at the moment.
- * It happens when it is already pending in a worker list
- * or when it is being cancelled.
- */
-static inline bool queuing_blocked(struct kthread_worker *worker,
-                                   struct kthread_work *work)
-{
-        lockdep_assert_held(&worker->lock);
-
-        return !list_empty(&work->node) || work->canceling;
-}
 
 int kthread_worker_fn(void *worker_ptr);
 

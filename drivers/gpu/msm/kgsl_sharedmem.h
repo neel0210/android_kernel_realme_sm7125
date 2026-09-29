@@ -1,4 +1,5 @@
 /* Copyright (c) 2002,2007-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -13,7 +14,6 @@
 #ifndef __KGSL_SHAREDMEM_H
 #define __KGSL_SHAREDMEM_H
 
-#include <linux/bitfield.h>
 #include <linux/dma-mapping.h>
 
 #include "kgsl_mmu.h"
@@ -93,7 +93,7 @@ struct page *kgsl_alloc_secure_page(void);
  *
  * Returns the alignment requested, as power of 2 exponent.
  */
-static inline int
+static inline u32
 kgsl_memdesc_get_align(const struct kgsl_memdesc *memdesc)
 {
 	return MEMFLAGS(memdesc->flags, KGSL_MEMALIGN_MASK,
@@ -271,7 +271,7 @@ static inline uint64_t
 kgsl_memdesc_footprint(const struct kgsl_memdesc *memdesc)
 {
 	return ALIGN(memdesc->size + kgsl_memdesc_guard_page_size(memdesc),
-		memdesc->pad_to);
+		PAGE_SIZE);
 }
 
 /*
@@ -378,21 +378,6 @@ static inline void kgsl_free_sgt(struct sg_table *sgt)
 		sg_free_table(sgt);
 		kfree(sgt);
 	}
-}
-
-/**
- * kgsl_cachemode_is_cached - Return true if the passed flags indicate a cached
- * buffer
- * @flags: A bitmask of KGSL_MEMDESC_ flags
- *
- * Return: true if the flags indicate a cached buffer
- */
-static inline bool kgsl_cachemode_is_cached(u64 flags)
-{
-	u64 mode = FIELD_GET(KGSL_CACHEMODE_MASK, flags);
-
-	return (mode != KGSL_CACHEMODE_UNCACHED &&
-		mode != KGSL_CACHEMODE_WRITECOMBINE);
 }
 
 #include "kgsl_pool.h"

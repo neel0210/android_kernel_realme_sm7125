@@ -45,6 +45,12 @@ static HLIST_HEAD(clk_root_list);
 static HLIST_HEAD(clk_orphan_list);
 static LIST_HEAD(clk_notifier_list);
 
+static struct hlist_head *all_lists[] = {
+	&clk_root_list,
+	&clk_orphan_list,
+	NULL,
+};
+
 struct clk_handoff_vdd {
 	struct list_head list;
 	struct clk_vdd_class *vdd_class;
@@ -62,12 +68,6 @@ static DEFINE_MUTEX(vdd_class_list_lock);
  * returning from clk_core_set_rate_nolock().
  */
 static LIST_HEAD(clk_rate_change_list);
-
-static struct hlist_head *all_lists[] = {
-	&clk_root_list,
-	&clk_orphan_list,
-	NULL,
-};
 
 /***    private data structures    ***/
 
@@ -767,10 +767,10 @@ static void clk_core_unprepare(struct clk_core *core)
 	if (!core)
 		return;
 
-	if (core->prepare_count == 0)
+	if (WARN_ON(core->prepare_count == 0))
 		return;
 
-	if (core->prepare_count == 1 && core->flags & CLK_IS_CRITICAL)
+	if (WARN_ON(core->prepare_count == 1 && core->flags & CLK_IS_CRITICAL))
 		return;
 
 	if (--core->prepare_count > 0)
@@ -906,10 +906,10 @@ static void clk_core_disable(struct clk_core *core)
 	if (!core)
 		return;
 
-	if (core->enable_count == 0)
+	if (WARN_ON(core->enable_count == 0))
 		return;
 
-	if (core->enable_count == 1 && core->flags & CLK_IS_CRITICAL)
+	if (WARN_ON(core->enable_count == 1 && core->flags & CLK_IS_CRITICAL))
 		return;
 
 	if (--core->enable_count > 0)
@@ -2704,6 +2704,10 @@ static u32 debug_suspend = 1;
 static DEFINE_MUTEX(clk_debug_lock);
 static HLIST_HEAD(clk_debug_list);
 
+static struct hlist_head *orphan_list[] = {
+	&clk_orphan_list,
+	NULL,
+};
 
 static void clk_state_subtree(struct clk_core *c)
 {
@@ -2753,11 +2757,6 @@ static const struct file_operations clk_state_fops = {
 	.read		= seq_read,
 	.llseek		= seq_lseek,
 	.release	= single_release,
-};
-
-static struct hlist_head *orphan_list[] = {
-	&clk_orphan_list,
-	NULL,
 };
 
 static void clk_summary_show_one(struct seq_file *s, struct clk_core *c,

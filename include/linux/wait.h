@@ -7,7 +7,6 @@
 #include <linux/list.h>
 #include <linux/stddef.h>
 #include <linux/spinlock.h>
-#include <linux/sched/debug.h>
 
 #include <asm/current.h>
 #include <uapi/linux/wait.h>
@@ -623,6 +622,120 @@ do {										\
 	__ret;									\
 })
 
+/**
+ * wait_event_idle - wait for a condition without contributing to system load
+ * @wq_head: the waitqueue to wait on
+ * @condition: a C expression for the event to wait for
+ *
+ * The process is put to sleep (TASK_IDLE) until the
+ * @condition evaluates to true.
+ * The @condition is checked each time the waitqueue @wq_head is woken up.
+ *
+ * wake_up() has to be called after changing any variable that could
+ * change the result of the wait condition.
+ *
+ */
+#define wait_event_idle(wq_head, condition)					\
+do {										\
+	might_sleep();								\
+	if (!(condition))							\
+		___wait_event(wq_head, condition, TASK_IDLE, 0, 0, schedule());	\
+} while (0)
+
+/**
+ * wait_event_idle_exclusive - wait for a condition with contributing to system load
+ * @wq_head: the waitqueue to wait on
+ * @condition: a C expression for the event to wait for
+ *
+ * The process is put to sleep (TASK_IDLE) until the
+ * @condition evaluates to true.
+ * The @condition is checked each time the waitqueue @wq_head is woken up.
+ *
+ * The process is put on the wait queue with an WQ_FLAG_EXCLUSIVE flag
+ * set thus if other processes wait on the same list, when this
+ * process is woken further processes are not considered.
+ *
+ * wake_up() has to be called after changing any variable that could
+ * change the result of the wait condition.
+ *
+ */
+#define wait_event_idle_exclusive(wq_head, condition)				\
+do {										\
+	might_sleep();								\
+	if (!(condition))							\
+		___wait_event(wq_head, condition, TASK_IDLE, 1, 0, schedule());	\
+} while (0)
+
+#define __wait_event_idle_timeout(wq_head, condition, timeout)			\
+	___wait_event(wq_head, ___wait_cond_timeout(condition),			\
+		      TASK_IDLE, 0, timeout,					\
+		      __ret = schedule_timeout(__ret))
+
+/**
+ * wait_event_idle_timeout - sleep without load until a condition becomes true or a timeout elapses
+ * @wq_head: the waitqueue to wait on
+ * @condition: a C expression for the event to wait for
+ * @timeout: timeout, in jiffies
+ *
+ * The process is put to sleep (TASK_IDLE) until the
+ * @condition evaluates to true. The @condition is checked each time
+ * the waitqueue @wq_head is woken up.
+ *
+ * wake_up() has to be called after changing any variable that could
+ * change the result of the wait condition.
+ *
+ * Returns:
+ * 0 if the @condition evaluated to %false after the @timeout elapsed,
+ * 1 if the @condition evaluated to %true after the @timeout elapsed,
+ * or the remaining jiffies (at least 1) if the @condition evaluated
+ * to %true before the @timeout elapsed.
+ */
+#define wait_event_idle_timeout(wq_head, condition, timeout)			\
+({										\
+	long __ret = timeout;							\
+	might_sleep();								\
+	if (!___wait_cond_timeout(condition))					\
+		__ret = __wait_event_idle_timeout(wq_head, condition, timeout);	\
+	__ret;									\
+})
+
+#define __wait_event_idle_exclusive_timeout(wq_head, condition, timeout)	\
+	___wait_event(wq_head, ___wait_cond_timeout(condition),			\
+		      TASK_IDLE, 1, timeout,					\
+		      __ret = schedule_timeout(__ret))
+
+/**
+ * wait_event_idle_exclusive_timeout - sleep without load until a condition becomes true or a timeout elapses
+ * @wq_head: the waitqueue to wait on
+ * @condition: a C expression for the event to wait for
+ * @timeout: timeout, in jiffies
+ *
+ * The process is put to sleep (TASK_IDLE) until the
+ * @condition evaluates to true. The @condition is checked each time
+ * the waitqueue @wq_head is woken up.
+ *
+ * The process is put on the wait queue with an WQ_FLAG_EXCLUSIVE flag
+ * set thus if other processes wait on the same list, when this
+ * process is woken further processes are not considered.
+ *
+ * wake_up() has to be called after changing any variable that could
+ * change the result of the wait condition.
+ *
+ * Returns:
+ * 0 if the @condition evaluated to %false after the @timeout elapsed,
+ * 1 if the @condition evaluated to %true after the @timeout elapsed,
+ * or the remaining jiffies (at least 1) if the @condition evaluated
+ * to %true before the @timeout elapsed.
+ */
+#define wait_event_idle_exclusive_timeout(wq_head, condition, timeout)		\
+({										\
+	long __ret = timeout;							\
+	might_sleep();								\
+	if (!___wait_cond_timeout(condition))					\
+		__ret = __wait_event_idle_exclusive_timeout(wq_head, condition, timeout);\
+	__ret;									\
+})
+
 extern int do_wait_intr(wait_queue_head_t *, wait_queue_entry_t *);
 extern int do_wait_intr_irq(wait_queue_head_t *, wait_queue_entry_t *);
 
@@ -1011,9 +1124,9 @@ void prepare_to_wait(struct wait_queue_head *wq_head, struct wait_queue_entry *w
 void prepare_to_wait_exclusive(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry, int state);
 long prepare_to_wait_event(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry, int state);
 void finish_wait(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry);
-long __sched wait_woken(struct wait_queue_entry *wq_entry, unsigned mode, long timeout);
-int __sched woken_wake_function(struct wait_queue_entry *wq_entry, unsigned mode, int sync, void *key);
-int __sched autoremove_wake_function(struct wait_queue_entry *wq_entry, unsigned mode, int sync, void *key);
+long wait_woken(struct wait_queue_entry *wq_entry, unsigned mode, long timeout);
+int woken_wake_function(struct wait_queue_entry *wq_entry, unsigned mode, int sync, void *key);
+int autoremove_wake_function(struct wait_queue_entry *wq_entry, unsigned mode, int sync, void *key);
 
 #define DEFINE_WAIT_FUNC(name, function)					\
 	struct wait_queue_entry name = {					\

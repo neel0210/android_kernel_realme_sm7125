@@ -196,7 +196,7 @@ extern int dmesg_restrict;
 extern int kptr_restrict;
 
 extern int
-devkmsg_sysctl_set_loglvl(struct ctl_table *table, int write, void __user *buf,
+devkmsg_sysctl_set_loglvl(struct ctl_table *table, int write, void *buf,
 			  size_t *lenp, loff_t *ppos);
 
 extern void wake_up_klogd(void);
@@ -336,7 +336,7 @@ extern asmlinkage void dump_stack(void) __cold;
 /* dynamic_pr_debug() uses pr_fmt() internally so we don't need it here */
 #define pr_debug(fmt, ...) \
 	dynamic_pr_debug(fmt, ##__VA_ARGS__)
-#elif defined(DEBUG_KERNEL)
+#elif defined(DEBUG)
 #define pr_debug(fmt, ...) \
 	printk(KERN_DEBUG pr_fmt(fmt), ##__VA_ARGS__)
 #else

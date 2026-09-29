@@ -21,36 +21,12 @@
 #define __ASM_ATOMIC_H
 
 #include <linux/compiler.h>
-#include <linux/stringify.h>
 #include <linux/types.h>
 
 #include <asm/barrier.h>
-#include <asm/brk-imm.h>
 #include <asm/lse.h>
 
 #ifdef __KERNEL__
-
-/*
- * To avoid having to allocate registers that pass the counter address and
- * address of the call site to the overflow handler, encode the register and
- * call site offset in a dummy cbz instruction that we can decode later.
- */
-#define REFCOUNT_CHECK_TAIL						\
-"	.subsection	1\n"						\
-"33:	brk "		__stringify(REFCOUNT_BRK_IMM) "\n"		\
-"	cbz		%[counter], 22b\n"	/* never reached */	\
-"	.previous\n"
-
-#define REFCOUNT_POST_CHECK_NEG						\
-"22:	b.mi		33f\n"						\
-	REFCOUNT_CHECK_TAIL
-
-#define REFCOUNT_POST_CHECK_NEG_OR_ZERO					\
-"	b.eq		33f\n"						\
-	REFCOUNT_POST_CHECK_NEG
-
-#define REFCOUNT_PRE_CHECK_ZERO(reg)	"ccmp " #reg ", wzr, #8, pl\n"
-#define REFCOUNT_PRE_CHECK_NONE(reg)
 
 #define __ARM64_IN_ATOMIC_IMPL
 
@@ -63,17 +39,6 @@
 #undef __ARM64_IN_ATOMIC_IMPL
 
 #include <asm/cmpxchg.h>
-
-#define ___atomic_add_unless(v, a, u, sfx)				\
-({									\
-	typeof((v)->counter) c, old;					\
-									\
-	c = atomic##sfx##_read(v);					\
-	while (c != (u) &&						\
-	      (old = atomic##sfx##_cmpxchg((v), c, c + (a))) != c)	\
-		c = old;						\
-	c;								\
- })
 
 #define ATOMIC_INIT(i)	{ (i) }
 
@@ -149,7 +114,6 @@
 #define atomic_dec_and_test(v)		(atomic_dec_return(v) == 0)
 #define atomic_sub_and_test(i, v)	(atomic_sub_return((i), (v)) == 0)
 #define atomic_add_negative(i, v)	(atomic_add_return((i), (v)) < 0)
-#define __atomic_add_unless(v, a, u)	___atomic_add_unless(v, a, u,)
 #define atomic_andnot			atomic_andnot
 
 /*
@@ -225,10 +189,7 @@
 #define atomic64_dec_and_test(v)	(atomic64_dec_return(v) == 0)
 #define atomic64_sub_and_test(i, v)	(atomic64_sub_return((i), (v)) == 0)
 #define atomic64_add_negative(i, v)	(atomic64_add_return((i), (v)) < 0)
-#define atomic64_add_unless(v, a, u)	(___atomic_add_unless(v, a, u, 64) != u)
 #define atomic64_andnot			atomic64_andnot
-
-#define atomic64_inc_not_zero(v)	atomic64_add_unless((v), 1, 0)
 
 #endif
 #endif

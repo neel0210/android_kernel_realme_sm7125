@@ -417,10 +417,8 @@ static const struct pstore_zbackend *zbackend =
 static int pstore_compress(const void *in, void *out,
 			   size_t inlen, size_t outlen)
 {
-	if (zbackend)
-		return zbackend->compress(in, out, inlen, outlen);
-	else
-		return -EIO;
+	/* Temporary: save uncompressed crash logs for boot debugging. */
+	return -EIO;
 }
 
 static int pstore_decompress(void *in, void *out, size_t inlen, size_t outlen)
@@ -483,10 +481,7 @@ void pstore_record_init(struct pstore_record *record,
 	record->psi = psinfo;
 
 	/* Report zeroed timestamp if called before timekeeping has resumed. */
-	if (__getnstimeofday(&record->time)) {
-		record->time.tv_sec = 0;
-		record->time.tv_nsec = 0;
-	}
+	record->time = ns_to_timespec64(ktime_get_real_fast_ns());
 }
 
 /*

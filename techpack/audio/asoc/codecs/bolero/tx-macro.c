@@ -757,12 +757,11 @@ static int tx_macro_enable_dec(struct snd_soc_dapm_widget *w,
 					    TX_HPF_CUT_OFF_FREQ_MASK,
 					    CF_MIN_3DB_150HZ << 5);
 		/* schedule work queue to Remove Mute */
-		queue_delayed_work(system_power_efficient_wq, 
-					&tx_priv->tx_mute_dwork[decimator].dwork,
+		schedule_delayed_work(&tx_priv->tx_mute_dwork[decimator].dwork,
 				      msecs_to_jiffies(tx_unmute_delay));
 		if (tx_priv->tx_hpf_work[decimator].hpf_cut_off_freq !=
 							CF_MIN_3DB_150HZ) {
-			queue_delayed_work(system_power_efficient_wq,
+			schedule_delayed_work(
 					&tx_priv->tx_hpf_work[decimator].dwork,
 					msecs_to_jiffies(300));
 			snd_soc_update_bits(codec, hpf_gate_reg, 0x02, 0x02);
@@ -1492,30 +1491,30 @@ static const struct snd_soc_dapm_route tx_audio_map[] = {
 };
 
 static const struct snd_kcontrol_new tx_macro_snd_controls[] = {
-	SOC_SINGLE_SX_TLV("TX_DEC0 Volume",
+	SOC_SINGLE_S8_TLV("TX_DEC0 Volume",
 			  BOLERO_CDC_TX0_TX_VOL_CTL,
-			  0, -84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("TX_DEC1 Volume",
+			  -84, 40, digital_gain),
+	SOC_SINGLE_S8_TLV("TX_DEC1 Volume",
 			  BOLERO_CDC_TX1_TX_VOL_CTL,
-			  0, -84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("TX_DEC2 Volume",
+			  -84, 40, digital_gain),
+	SOC_SINGLE_S8_TLV("TX_DEC2 Volume",
 			  BOLERO_CDC_TX2_TX_VOL_CTL,
-			  0, -84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("TX_DEC3 Volume",
+			  -84, 40, digital_gain),
+	SOC_SINGLE_S8_TLV("TX_DEC3 Volume",
 			  BOLERO_CDC_TX3_TX_VOL_CTL,
-			  0, -84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("TX_DEC4 Volume",
+			  -84, 40, digital_gain),
+	SOC_SINGLE_S8_TLV("TX_DEC4 Volume",
 			  BOLERO_CDC_TX4_TX_VOL_CTL,
-			  0, -84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("TX_DEC5 Volume",
+			  -84, 40, digital_gain),
+	SOC_SINGLE_S8_TLV("TX_DEC5 Volume",
 			  BOLERO_CDC_TX5_TX_VOL_CTL,
-			  0, -84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("TX_DEC6 Volume",
+			  -84, 40, digital_gain),
+	SOC_SINGLE_S8_TLV("TX_DEC6 Volume",
 			  BOLERO_CDC_TX6_TX_VOL_CTL,
-			  0, -84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("TX_DEC7 Volume",
+			  -84, 40, digital_gain),
+	SOC_SINGLE_S8_TLV("TX_DEC7 Volume",
 			  BOLERO_CDC_TX7_TX_VOL_CTL,
-			  0, -84, 40, digital_gain),
+			  -84, 40, digital_gain),
 
 	SOC_ENUM("TX0 HPF cut off", cf_dec0_enum),
 

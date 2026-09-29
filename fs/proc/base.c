@@ -81,6 +81,7 @@
 #include <linux/poll.h>
 #include <linux/nsproxy.h>
 #include <linux/oom.h>
+#include <linux/oom_score_notifier.h>
 #include <linux/elf.h>
 #include <linux/pid_namespace.h>
 #include <linux/user_namespace.h>
@@ -110,6 +111,17 @@
 #include <linux/oppo_healthinfo/oppo_jank_monitor.h>
 #endif
 #endif /* OPLUS_FEATURE_HEALTHINFO */
+
+#ifdef OPLUS_FEATURE_UIFIRST
+// XieLiujie@BSP.KERNEL.PERFORMANCE, 2020/05/25, Add for UIFirst
+#define GLOBAL_SYSTEM_UID KUIDT_INIT(1000)
+#define GLOBAL_SYSTEM_GID KGIDT_INIT(1000)
+extern const struct file_operations proc_static_ux_operations;
+#ifdef CONFIG_CAMERA_OPT
+extern const struct file_operations proc_camera_opt_operations;
+#endif
+extern bool is_special_entry(struct dentry *dentry, const char* special_proc);
+#endif /* OPLUS_FEATURE_UIFIRST */
 
 /* NOTE:
  *	Implementing inode permission operations in /proc is almost
@@ -151,9 +163,13 @@ struct pid_entry {
 #define REG(NAME, MODE, fops)				\
 	NOD(NAME, (S_IFREG|(MODE)), NULL, &fops, {})
 #define ONE(NAME, MODE, show)				\
-	NOD(NAME, (S_IFREG|(MODE)), 			\
+	NOD(NAME, (S_IFREG|(MODE)),			\
 		NULL, &proc_single_file_operations,	\
 		{ .proc_show = show } )
+#define ATTR(LSM, NAME, MODE)				\
+	NOD(NAME, (S_IFREG|(MODE)),			\
+		NULL, &proc_pid_attr_operations,	\
+		{ .lsm = LSM })
 
 /*
  * Count the number of hardlinks for the pid_entry table, excluding the .
@@ -216,53 +232,12 @@ static int proc_root_link(struct dentry *dentry, struct path *path)
 	return result;
 }
 
-/*
- * If the user used setproctitle(), we just get the string from
- * user space at arg_start, and limit it to a maximum of one page.
- */
-static ssize_t get_mm_proctitle(struct mm_struct *mm, char __user *buf,
-				size_t count, unsigned long pos,
-				unsigned long arg_start)
-{
-	char *page;
-	int ret, got;
-
-	if (pos >= PAGE_SIZE)
-		return 0;
-
-	page = (char *)__get_free_page(GFP_KERNEL);
-	if (!page)
-		return -ENOMEM;
-
-	ret = 0;
-	got = access_remote_vm(mm, arg_start, page, PAGE_SIZE, FOLL_ANON);
-	if (got > 0) {
-		int len = strnlen(page, got);
-
-		/* Include the NUL character if it was found */
-		if (len < got)
-			len++;
-
-		if (len > pos) {
-			len -= pos;
-			if (len > count)
-				len = count;
-			len -= copy_to_user(buf, page+pos, len);
-			if (!len)
-				len = -EFAULT;
-			ret = len;
-		}
-	}
-	free_page((unsigned long)page);
-	return ret;
-}
-
 static ssize_t get_mm_cmdline(struct mm_struct *mm, char __user *buf,
 			      size_t count, loff_t *ppos)
 {
 	unsigned long arg_start, arg_end, env_start, env_end;
 	unsigned long pos, len;
-	char *page, c;
+	char *page;
 
 	/* Check if process spawned far enough to have cmdline. */
 	if (!mm->env_end)
@@ -279,42 +254,24 @@ static ssize_t get_mm_cmdline(struct mm_struct *mm, char __user *buf,
 		return 0;
 
 	/*
-	 * We allow setproctitle() to overwrite the argument
-	 * strings, and overflow past the original end. But
-	 * only when it overflows into the environment area.
+	 * We have traditionally allowed the user to re-write
+	 * the argument strings and overflow the end result
+	 * into the environment section. But only do that if
+	 * the environment area is contiguous to the arguments.
 	 */
-	if (env_start != arg_end || env_end < env_start)
+	if (env_start != arg_end || env_start >= env_end)
 		env_start = env_end = arg_end;
-	len = env_end - arg_start;
 
 	/* We're not going to care if "*ppos" has high bits set */
-	pos = *ppos;
-	if (pos >= len)
-		return 0;
-	if (count > len - pos)
-		count = len - pos;
-	if (!count)
+	pos = arg_start + *ppos;
+
+	/* .. but we do check the result is in the proper range */
+	if (pos < arg_start || pos >= env_end)
 		return 0;
 
-	/*
-	 * Magical special case: if the argv[] end byte is not
-	 * zero, the user has overwritten it with setproctitle(3).
-	 *
-	 * Possible future enhancement: do this only once when
-	 * pos is 0, and set a flag in the 'struct file'.
-	 */
-	if (access_remote_vm(mm, arg_end-1, &c, 1, FOLL_ANON) == 1 && c)
-		return get_mm_proctitle(mm, buf, count, pos, arg_start);
-
-	/*
-	 * For the non-setproctitle() case we limit things strictly
-	 * to the [arg_start, arg_end[ range.
-	 */
-	pos += arg_start;
-	if (pos < arg_start || pos >= arg_end)
-		return 0;
-	if (count > arg_end - pos)
-		count = arg_end - pos;
+	/* .. and we never go past env_end */
+	if (env_end - pos < count)
+		count = env_end - pos;
 
 	page = (char *)__get_free_page(GFP_KERNEL);
 	if (!page)
@@ -328,6 +285,29 @@ static ssize_t get_mm_cmdline(struct mm_struct *mm, char __user *buf,
 		got = access_remote_vm(mm, pos, page, size, FOLL_ANON);
 		if (got <= 0)
 			break;
+
+		/* Don't walk past a NUL character once you hit arg_end */
+		if (pos + got >= arg_end) {
+			int n = 0;
+
+			/*
+			 * If we started before 'arg_end' but ended up
+			 * at or after it, we start the NUL character
+			 * check at arg_end-1 (where we expect the normal
+			 * EOF to be).
+			 *
+			 * NOTE! This is smaller than 'got', because
+			 * pos + got >= arg_end
+			 */
+			if (pos < arg_end)
+				n = arg_end - pos - 1;
+
+			/* Cut off at first NUL after 'n' */
+			got = n + strnlen(page+n, got-n);
+			if (!got)
+				break;
+		}
+
 		got -= copy_to_user(buf, page, got);
 		if (unlikely(!got)) {
 			if (!len)
@@ -558,7 +538,7 @@ static int proc_oom_score(struct seq_file *m, struct pid_namespace *ns,
 	unsigned long totalpages = totalram_pages + total_swap_pages;
 	unsigned long points = 0;
 
-	points = oom_badness(task, NULL, NULL, totalpages, false) *
+	points = oom_badness(task, NULL, NULL, totalpages) *
 					1000 / totalpages;
 	seq_printf(m, "%lu\n", points);
 
@@ -1046,6 +1026,9 @@ static int __set_oom_adj(struct file *file, int oom_adj, bool legacy)
 {
 	struct mm_struct *mm = NULL;
 	struct task_struct *task;
+#ifdef CONFIG_OOM_SCORE_NOTIFIER
+	int old_oom_score_adj;
+#endif
 	int err = 0;
 
 	task = get_proc_task(file_inode(file));
@@ -1091,9 +1074,21 @@ static int __set_oom_adj(struct file *file, int oom_adj, bool legacy)
 		}
 	}
 
+#ifdef CONFIG_OOM_SCORE_NOTIFIER
+	old_oom_score_adj = task->signal->oom_score_adj;
+#endif
+
 	task->signal->oom_score_adj = oom_adj;
 	if (!legacy && has_capability_noaudit(current, CAP_SYS_RESOURCE))
 		task->signal->oom_score_adj_min = (short)oom_adj;
+#ifdef CONFIG_OOM_SCORE_NOTIFIER
+	err = oom_score_notify_update(task, old_oom_score_adj);
+	if (err) {
+		/* rollback and error handle. */
+		task->signal->oom_score_adj = old_oom_score_adj;
+		goto err_unlock;
+	}
+#endif
 	trace_oom_score_adj_update(task);
 
 	if (mm) {
@@ -2041,6 +2036,14 @@ int pid_revalidate(struct dentry *dentry, unsigned int flags)
 
 	if (task) {
 		task_dump_owner(task, inode->i_mode, &inode->i_uid, &inode->i_gid);
+
+#ifdef OPLUS_FEATURE_UIFIRST
+// XieLiujie@BSP.KERNEL.PERFORMANCE, 2020/05/25, Add for UIFirst
+		if (is_special_entry(dentry, "static_ux")) {
+			inode->i_uid = GLOBAL_SYSTEM_UID;
+			inode->i_gid = GLOBAL_SYSTEM_GID;
+		}
+#endif /* OPLUS_FEATURE_UIFIRST */
 		inode->i_mode &= ~(S_ISUID | S_ISGID);
 		security_task_to_inode(task, inode);
 		put_task_struct(task);
@@ -2249,16 +2252,16 @@ struct map_files_info {
 };
 
 /*
- * Only allow CAP_SYS_ADMIN to follow the links, due to concerns about how the
- * symlinks may be used to bypass permissions on ancestor directories in the
- * path to the file in question.
+ * Only allow CAP_SYS_ADMIN and CAP_CHECKPOINT_RESTORE to follow the links, due
+ * to concerns about how the symlinks may be used to bypass permissions on
+ * ancestor directories in the path to the file in question.
  */
 static const char *
 proc_map_files_get_link(struct dentry *dentry,
 			struct inode *inode,
 		        struct delayed_call *done)
 {
-	if (!capable(CAP_SYS_ADMIN))
+	if (!checkpoint_restore_ns_capable(&init_user_ns))
 		return ERR_PTR(-EPERM);
 
 	return proc_pid_get_link(dentry, inode, done);
@@ -2746,7 +2749,7 @@ static ssize_t proc_pid_attr_read(struct file * file, char __user * buf,
 	if (!task)
 		return -ESRCH;
 
-	length = security_getprocattr(task,
+	length = security_getprocattr(task, PROC_I(inode)->op.lsm,
 				      (char*)file->f_path.dentry->d_name.name,
 				      &p);
 	put_task_struct(task);
@@ -2760,51 +2763,53 @@ static ssize_t proc_pid_attr_write(struct file * file, const char __user * buf,
 				   size_t count, loff_t *ppos)
 {
 	struct inode * inode = file_inode(file);
+	struct task_struct *task;
 	void *page;
-	ssize_t length;
-	struct task_struct *task = get_proc_task(inode);
+	int rv;
 
 	/* A task may only write when it was the opener. */
 	if (file->private_data != current->mm)
 		return -EPERM;
 
-	length = -ESRCH;
-	if (!task)
-		goto out_no_task;
-
+	rcu_read_lock();
+	task = pid_task(proc_pid(inode), PIDTYPE_PID);
+	if (!task) {
+		rcu_read_unlock();
+		return -ESRCH;
+	}
 	/* A task may only write its own attributes. */
-	length = -EACCES;
-	if (current != task)
-		goto out;
+	if (current != task) {
+		rcu_read_unlock();
+		return -EACCES;
+	}
+	rcu_read_unlock();
 
 	if (count > PAGE_SIZE)
 		count = PAGE_SIZE;
 
 	/* No partial writes. */
-	length = -EINVAL;
 	if (*ppos != 0)
-		goto out;
+		return -EINVAL;
 
 	page = memdup_user(buf, count);
 	if (IS_ERR(page)) {
-		length = PTR_ERR(page);
+		rv = PTR_ERR(page);
 		goto out;
 	}
 
 	/* Guard against adverse ptrace interaction */
-	length = mutex_lock_interruptible(&current->signal->cred_guard_mutex);
-	if (length < 0)
+	rv = mutex_lock_interruptible(&current->signal->cred_guard_mutex);
+	if (rv < 0)
 		goto out_free;
 
-	length = security_setprocattr(file->f_path.dentry->d_name.name,
-				      page, count);
+	rv = security_setprocattr(PROC_I(inode)->op.lsm,
+				  file->f_path.dentry->d_name.name, page,
+				  count);
 	mutex_unlock(&current->signal->cred_guard_mutex);
 out_free:
 	kfree(page);
 out:
-	put_task_struct(task);
-out_no_task:
-	return length;
+	return rv;
 }
 
 static const struct file_operations proc_pid_attr_operations = {
@@ -2815,13 +2820,53 @@ static const struct file_operations proc_pid_attr_operations = {
 	.release	= mem_release,
 };
 
+#define LSM_DIR_OPS(LSM) \
+static int proc_##LSM##_attr_dir_iterate(struct file *filp, \
+			     struct dir_context *ctx) \
+{ \
+	return proc_pident_readdir(filp, ctx, \
+				   LSM##_attr_dir_stuff, \
+				   ARRAY_SIZE(LSM##_attr_dir_stuff)); \
+} \
+\
+static const struct file_operations proc_##LSM##_attr_dir_ops = { \
+	.read		= generic_read_dir, \
+	.iterate	= proc_##LSM##_attr_dir_iterate, \
+	.llseek		= default_llseek, \
+}; \
+\
+static struct dentry *proc_##LSM##_attr_dir_lookup(struct inode *dir, \
+				struct dentry *dentry, unsigned int flags) \
+{ \
+	return proc_pident_lookup(dir, dentry, \
+				  LSM##_attr_dir_stuff, \
+				  ARRAY_SIZE(LSM##_attr_dir_stuff)); \
+} \
+\
+static const struct inode_operations proc_##LSM##_attr_dir_inode_ops = { \
+	.lookup		= proc_##LSM##_attr_dir_lookup, \
+	.getattr	= pid_getattr, \
+	.setattr	= proc_setattr, \
+}
+
+#ifdef CONFIG_SECURITY_SMACK
+static const struct pid_entry smack_attr_dir_stuff[] = {
+	ATTR("smack", "current",	0666),
+};
+LSM_DIR_OPS(smack);
+#endif
+
 static const struct pid_entry attr_dir_stuff[] = {
-	REG("current",    S_IRUGO|S_IWUGO, proc_pid_attr_operations),
-	REG("prev",       S_IRUGO,	   proc_pid_attr_operations),
-	REG("exec",       S_IRUGO|S_IWUGO, proc_pid_attr_operations),
-	REG("fscreate",   S_IRUGO|S_IWUGO, proc_pid_attr_operations),
-	REG("keycreate",  S_IRUGO|S_IWUGO, proc_pid_attr_operations),
-	REG("sockcreate", S_IRUGO|S_IWUGO, proc_pid_attr_operations),
+	ATTR(NULL, "current",		0666),
+	ATTR(NULL, "prev",		0444),
+	ATTR(NULL, "exec",		0666),
+	ATTR(NULL, "fscreate",		0666),
+	ATTR(NULL, "keycreate",		0666),
+	ATTR(NULL, "sockcreate",	0666),
+#ifdef CONFIG_SECURITY_SMACK
+	DIR("smack",			0555,
+	    proc_smack_attr_dir_inode_ops, proc_smack_attr_dir_ops),
+#endif
 };
 
 static int proc_attr_dir_readdir(struct file *file, struct dir_context *ctx)
@@ -3305,6 +3350,15 @@ static int proc_pid_patch_state(struct seq_file *m, struct pid_namespace *ns,
 static const struct file_operations proc_task_operations;
 static const struct inode_operations proc_task_inode_operations;
 
+#if defined(OPLUS_FEATURE_VIRTUAL_RESERVE_MEMORY) && defined(CONFIG_VIRTUAL_RESERVE_MEMORY)
+/* 
+ * read the reserved mmaps and reserved area
+ */
+extern int proc_pid_reserve_area(struct seq_file *m, struct pid_namespace *ns,
+		struct pid *pid, struct task_struct *task);
+extern const struct file_operations proc_pid_rmaps_operations;
+#endif
+
 static const struct pid_entry tgid_base_stuff[] = {
 	DIR("task",       S_IRUGO|S_IXUGO, proc_task_inode_operations, proc_task_operations),
 	DIR("fd",         S_IRUSR|S_IXUSR, proc_fd_inode_operations, proc_fd_operations),
@@ -3342,6 +3396,10 @@ static const struct pid_entry tgid_base_stuff[] = {
 	ONE("stat",       S_IRUGO, proc_tgid_stat),
 	ONE("statm",      S_IRUGO, proc_pid_statm),
 	REG("maps",       S_IRUGO, proc_pid_maps_operations),
+#if defined(OPLUS_FEATURE_VIRTUAL_RESERVE_MEMORY) && defined(CONFIG_VIRTUAL_RESERVE_MEMORY)
+	REG("reserve_maps", S_IRUSR, proc_pid_rmaps_operations),
+	ONE("reserve_area", S_IRUSR, proc_pid_reserve_area),
+#endif
 #ifdef CONFIG_NUMA
 	REG("numa_maps",  S_IRUGO, proc_pid_numa_maps_operations),
 #endif
@@ -3831,6 +3889,13 @@ static const struct pid_entry tid_base_stuff[] = {
 #endif
 #ifdef CONFIG_CPU_FREQ_TIMES
 	ONE("time_in_state", 0444, proc_time_in_state_show),
+#endif
+#ifdef OPLUS_FEATURE_UIFIRST
+// XieLiujie@BSP.KERNEL.PERFORMANCE, 2020/05/25, Add for UIFirst
+	REG("static_ux", S_IRUGO | S_IWUGO, proc_static_ux_operations),
+#endif /* OPLUS_FEATURE_UIFIRST */
+#ifdef CONFIG_CAMERA_OPT
+        REG("camera_opt", S_IRUGO | S_IWUGO, proc_camera_opt_operations),
 #endif
 };
 

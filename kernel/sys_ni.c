@@ -71,6 +71,8 @@ cond_syscall(sys_epoll_ctl);
 cond_syscall(sys_epoll_wait);
 cond_syscall(sys_epoll_pwait);
 cond_syscall(compat_sys_epoll_pwait);
+cond_syscall(sys_epoll_pwait2);
+cond_syscall(compat_sys_epoll_pwait2);
 cond_syscall(sys_semget);
 cond_syscall(sys_semop);
 cond_syscall(sys_semtimedop);
@@ -226,6 +228,10 @@ cond_syscall(sys_eventfd);
 cond_syscall(sys_eventfd2);
 cond_syscall(sys_memfd_create);
 cond_syscall(sys_userfaultfd);
+
+/* kernel/fork.c */
+/* __ARCH_WANT_SYS_CLONE3 */
+cond_syscall(clone3);
 
 /* performance counters: */
 cond_syscall(sys_perf_event_open);

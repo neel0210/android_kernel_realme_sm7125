@@ -1,0 +1,55 @@
+ARM64 extended BPF atomics and JMP32 backports
+============================================
+
+Sources:
+- Linux v5.12 atomic UAPI, interpreter and verifier register-definition handling:
+  https://github.com/torvalds/linux/tree/v5.12/kernel/bpf
+- Linux v5.15.180 check_atomic(), including pointer-leak fixes:
+  https://github.com/gregkh/linux/blob/v5.15.180/kernel/bpf/verifier.c
+- Linux v6.1.130 ARM64 emit_ll_sc_atomic():
+  https://github.com/gregkh/linux/blob/v6.1.130/arch/arm64/net/bpf_jit_comp.c
+- Linux v5.4 ARM64 conditional-jump emission:
+  https://github.com/torvalds/linux/blob/v5.4/arch/arm64/net/bpf_jit_comp.c
+
+The ARM64 JIT implements ADD/AND/OR/XOR, fetch variants, XCHG and CMPXCHG
+for 32 and 64 bits. Legacy ADD keeps its existing LSE fast path. Extended
+operations use upstream LL/SC sequences with release stores and barriers;
+they work without LSE. The interpreter implements the same operations.
+Other architecture JITs reject extended operations through an explicit
+capability hook, rather than silently interpreting them as legacy XADD.
+Precision backtracking conservatively marks scalars precise across atomics.
+
+The verifier and interpreter already handle JMP32 in this tree. The ARM64
+JIT now emits 32-bit comparisons/tests for every JMP32 condition, including
+signed comparisons and JSET, while preserving 64-bit JMP semantics. This
+addresses gpuWork.bpf failing with "unknown opcode 56" (JMP32 JNE immediate).
+
+Host check (emitter logic, NOT execution of generated ARM64 instructions):
+  python3 tools/testing/selftests/bpf/test_arm64_atomics.py
+  python3 tools/testing/selftests/bpf/test_arm64_jumps.py
+
+The jump check exercises 7,128 cases, including signed boundaries, poisoned
+upper halves, negative immediates and forward/backward branch displacements.
+It models ARM64 flags; it does not validate instruction encodings.
+
+Build the standalone device test with the Android NDK:
+  aarch64-linux-android30-clang -O2 -Wall -Wextra -Werror \
+    tools/testing/selftests/bpf/test_atomics_device.c -o test-atomics
+
+After booting the new kernel, run test-atomics as root. It loads and executes
+120 atomic programs through BPF_PROG_TEST_RUN, verifies three invalid
+programs are rejected, then tests 1,100 conditional-jump programs. Packet
+loads prevent the verifier from folding away the comparisons. With
+CONFIG_BPF_JIT_ALWAYS_ON this exercises the real
+verifier and ARM64 JIT. For an interpreter build, also run with the JIT off.
+A permission error does not establish whether atomic support works.
+
+Full kernel compilation and execution on the device remain required. The
+host emitter check does not test instruction encodings, the real verifier,
+concurrent CPU memory ordering, or the kernel interpreter.
+
+Device baseline (2026-09-21, kernel 8885761e622b, before JMP32): all atomic
+cases passed; the first JMP32 case failed loading with errno 524 after the
+verifier accepted it. Rebuild and flash before expecting the jump suite to
+pass. GPU accounting must also be checked with ../kgsl/README.gpu-accounting;
+passing these opcode tests alone does not prove the Android BPF object loads.

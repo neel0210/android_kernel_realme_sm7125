@@ -93,6 +93,10 @@ void __init_rwsem(struct rw_semaphore *sem, const char *name,
 #ifdef CONFIG_RWSEM_PRIO_AWARE
 	sem->m_count = 0;
 #endif
+#ifdef OPLUS_FEATURE_UIFIRST
+// XieLiujie@BSP.KERNEL.PERFORMANCE, 2020/05/25, Add for UIFirst
+	sem->ux_dep_task = NULL;
+#endif /* OPLUS_FEATURE_UIFIRST */
 }
 
 EXPORT_SYMBOL(__init_rwsem);
@@ -269,6 +273,14 @@ __rwsem_down_read_failed_common(struct rw_semaphore *sem, int state)
 	     (adjustment != -RWSEM_ACTIVE_READ_BIAS ||
 	     is_first_waiter)))
 		__rwsem_mark_wake(sem, RWSEM_WAKE_ANY, &wake_q);
+
+#ifdef OPLUS_FEATURE_UIFIRST
+// XieLiujie@BSP.KERNEL.PERFORMANCE, 2020/05/25, Add for UIFirst
+	if (sysctl_uifirst_enabled) {
+		rwsem_set_inherit_ux(current, waiter.task, READ_ONCE(sem->owner), sem);
+	}
+#endif /* OPLUS_FEATURE_UIFIRST */
+
 	raw_spin_unlock_irq(&sem->wait_lock);
 	wake_up_q(&wake_q);
 
@@ -411,36 +423,32 @@ static noinline bool rwsem_spin_on_owner(struct rw_semaphore *sem)
 {
 	struct task_struct *owner = READ_ONCE(sem->owner);
 
-	if (!owner || !is_rwsem_owner_spinnable(owner))
+	if (!is_rwsem_owner_spinnable(owner))
 		return false;
 
-	while (true) {
-		bool on_cpu, same_owner;
-
+	rcu_read_lock();
+	while (owner && (READ_ONCE(sem->owner) == owner)) {
 		/*
-		 * Ensure sem->owner still matches owner. If that fails,
+		 * Ensure we emit the owner->on_cpu, dereference _after_
+		 * checking sem->owner still matches owner, if that fails,
 		 * owner might point to free()d memory, if it still matches,
 		 * the rcu_read_lock() ensures the memory stays valid.
 		 */
-		rcu_read_lock();
-		same_owner = sem->owner == owner;
-		if (same_owner)
-			on_cpu = owner->on_cpu &&
-				 !vcpu_is_preempted(task_cpu(owner));
-		rcu_read_unlock();
-
-		if (!same_owner)
-			break;
+		barrier();
 
 		/*
 		 * abort spinning when need_resched or owner is not running or
 		 * owner's cpu is preempted.
 		 */
-		if (!on_cpu || need_resched())
+		if (!owner->on_cpu || need_resched() ||
+				vcpu_is_preempted(task_cpu(owner))) {
+			rcu_read_unlock();
 			return false;
+		}
 
 		cpu_relax();
 	}
+	rcu_read_unlock();
 
 	/*
 	 * If there is a new owner or the owner is not set, we continue
@@ -589,6 +597,13 @@ __rwsem_down_write_failed_common(struct rw_semaphore *sem, int state)
 	} else
 		count = atomic_long_add_return(RWSEM_WAITING_BIAS, &sem->count);
 
+#ifdef OPLUS_FEATURE_UIFIRST
+// XieLiujie@BSP.KERNEL.PERFORMANCE, 2020/05/25, Add for UIFirst
+	if (sysctl_uifirst_enabled) {
+		rwsem_set_inherit_ux(waiter.task, current, READ_ONCE(sem->owner), sem);
+	}
+#endif /* OPLUS_FEATURE_UIFIRST */
+
 	/* wait until we successfully acquire the lock */
 	set_current_state(state);
 	while (true) {
@@ -725,6 +740,14 @@ locked:
 
 	if (!list_empty(&sem->wait_list))
 		__rwsem_mark_wake(sem, RWSEM_WAKE_ANY, &wake_q);
+
+#ifdef OPLUS_FEATURE_UIFIRST
+// XieLiujie@BSP.KERNEL.PERFORMANCE, 2020/05/25, Add for UIFirst
+	if (sysctl_uifirst_enabled) {
+		rwsem_unset_inherit_ux(sem, current);
+	}
+#endif /* OPLUS_FEATURE_UIFIRST */
+
 	raw_spin_unlock_irqrestore(&sem->wait_lock, flags);
 	wake_up_q(&wake_q);
 

@@ -88,6 +88,13 @@ endif
 
 else # TARGET_BOARD_TYPE != auto
 
+dtb-$(CONFIG_ARCH_QCOM)	+= apq8016-sbc.dtb
+dtb-$(CONFIG_ARCH_QCOM)	+= apq8096-db820c.dtb
+dtb-$(CONFIG_ARCH_QCOM)	+= ipq8074-hk01.dtb
+dtb-$(CONFIG_ARCH_QCOM)	+= msm8916-mtp.dtb
+dtb-$(CONFIG_ARCH_QCOM)	+= msm8992-bullhead-rev-101.dtb
+dtb-$(CONFIG_ARCH_QCOM)	+= msm8994-angler-rev-101.dtb
+dtb-$(CONFIG_ARCH_QCOM)	+= msm8996-mtp.dtb
 dtb-$(CONFIG_ARCH_QCS403) += qcs403-iot-sku1.dtb \
 		qcs403-iot-sku3.dtb \
 		qcs403-iot-sku5.dtb \
@@ -351,6 +358,7 @@ ifeq ($(CONFIG_BUILD_ARM64_DT_OVERLAY),y)
 		trinket-usbc-external-codec-idp-overlay.dtbo \
 		trinket-usbc-idp-overlay.dtbo \
 		trinket-dp-idp-overlay.dtbo \
+		trinket-facepay-overlay.dtbo \
 		trinket-iot-idp-overlay.dtbo \
 		trinketp-iot-idp-overlay.dtbo \
 		trinket-iot-external-codec-idp-overlay.dtbo \
@@ -369,6 +377,7 @@ trinket-external-codec-idp-overlay.dtbo-base := trinket.dtb
 trinket-usbc-external-codec-idp-overlay.dtbo-base := trinket.dtb
 trinket-usbc-idp-overlay.dtbo-base := trinket.dtb
 trinket-dp-idp-overlay.dtbo-base := trinket.dtb
+trinket-facepay-overlay.dtbo-base := trinket-iot.dtb
 trinket-iot-idp-overlay.dtbo-base := trinket-iot.dtb
 trinketp-iot-idp-overlay.dtbo-base := trinketp-iot.dtb
 trinket-iot-external-codec-idp-overlay.dtbo-base := trinket-iot.dtb

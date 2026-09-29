@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2012-2021 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -187,6 +188,9 @@
 #include <wlan_hdd_hang_event.h>
 #include <cdp_txrx_ctrl.h>
 #include "wlan_global_lmac_if_api.h"
+#ifdef WLAN_FEATURE_DYNAMIC_RX_AGGREGATION
+#include <net/pkt_cls.h>
+#endif
 
 #ifdef MODULE
 #define WLAN_MODULE_NAME  module_name(THIS_MODULE)
@@ -214,6 +218,12 @@
 
 #define MAX_NET_DEV_REF_LEAK_ITERATIONS 10
 #define NET_DEV_REF_LEAK_ITERATION_SLEEP_TIME_MS 10
+
+#ifdef FEATURE_TSO
+#define TSO_FEATURE_FLAGS (NETIF_F_TSO | NETIF_F_TSO6 | NETIF_F_SG)
+#else
+#define TSO_FEATURE_FLAGS 0
+#endif
 
 int wlan_start_ret_val;
 static DECLARE_COMPLETION(wlan_start_comp);
@@ -2477,6 +2487,14 @@ int hdd_update_tgt_cfg(hdd_handle_t hdd_handle, struct wma_tgt_cfg *cfg)
 			hdd_ctx->psoc, cfg->obss_color_collision_offloaded);
 	if (QDF_IS_STATUS_ERROR(status))
 		hdd_err("Failed to set WNI_CFG_OBSS_COLOR_COLLISION_OFFLOAD");
+
+	if (!cfg->obss_color_collision_offloaded) {
+		status = ucfg_mlme_set_bss_color_collision_det_sta(
+				hdd_ctx->psoc,
+				cfg->obss_color_collision_offloaded);
+		if (QDF_IS_STATUS_ERROR(status))
+			hdd_err("Failed to set CFG_BSS_CLR_COLLISION_DET_STA");
+	}
 
 	ucfg_mlme_get_bcast_twt(hdd_ctx->psoc, &bval);
 	if (bval)
@@ -6461,6 +6479,7 @@ struct hdd_adapter *hdd_open_adapter(struct hdd_context *hdd_ctx, uint8_t sessio
 	qdf_event_create(&adapter->peer_cleanup_done);
 	hdd_sta_info_init(&adapter->sta_info_list);
 	hdd_sta_info_init(&adapter->cache_sta_info_list);
+	qdf_atomic_init(&adapter->gro_disallowed);
 
 	for (i = 0; i < NET_DEV_HOLD_ID_MAX; i++)
 		qdf_atomic_init(
@@ -7123,8 +7142,10 @@ void hdd_set_netdev_flags(struct hdd_adapter *adapter)
 			(NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM);
 
 	if (cdp_cfg_get(soc, cfg_dp_tso_enable) && enable_csum)
-		adapter->dev->features |=
-			 (NETIF_F_TSO | NETIF_F_TSO6 | NETIF_F_SG);
+		adapter->dev->features |= TSO_FEATURE_FLAGS;
+
+	if (cdp_cfg_get(soc, cfg_dp_sg_enable))
+		adapter->dev->features |= NETIF_F_SG;
 
 	adapter->dev->features |= NETIF_F_RXCSUM;
 	temp = (uint64_t)adapter->dev->features;
@@ -9704,6 +9725,151 @@ void hdd_set_vdev_bundle_require_flag(uint16_t vdev_id,
 #endif
 
 #define HDD_BW_GET_DIFF(_x, _y) (unsigned long)((ULONG_MAX - (_y)) + (_x) + 1)
+
+#ifdef WLAN_FEATURE_DYNAMIC_RX_AGGREGATION
+static enum qdisc_filter_status
+__hdd_check_for_prio_filter_in_clsact_qdisc(struct tcf_block *block,
+					    uint32_t prio)
+{
+	struct tcf_chain *chain;
+	struct tcf_proto *tp;
+	enum qdisc_filter_status ret = QDISC_FILTER_PRIO_MISMATCH;
+
+	if (!rtnl_trylock())
+		return QDISC_FILTER_RTNL_LOCK_FAIL;
+
+	list_for_each_entry(chain, &block->chain_list, list) {
+		for (tp = rtnl_dereference(chain->filter_chain); tp;
+		     tp = rtnl_dereference(tp->next)) {
+			if (tp->prio == (prio << 16))
+				ret = QDISC_FILTER_PRIO_MATCH;
+		}
+	}
+	rtnl_unlock();
+
+	return ret;
+}
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0))
+/**
+ * hdd_check_for_prio_filter_in_clsact_qdisc() - Check if priority 3 filter
+ *  is configured in the ingress clsact qdisc
+ * @qdisc: pointer to clsact qdisc
+ *
+ * Return: true if priority 3 filter is present else false
+ */
+static enum qdisc_filter_status
+hdd_check_for_prio_filter_in_clsact_qdisc(struct Qdisc *qdisc, uint32_t prio)
+{
+	const struct Qdisc_class_ops *cops;
+	struct tcf_block *ingress_block;
+
+	cops = qdisc->ops->cl_ops;
+	if (qdf_unlikely(!cops || !cops->tcf_block))
+		return QDISC_FILTER_PRIO_MISMATCH;
+
+	ingress_block = cops->tcf_block(qdisc, TC_H_MIN_INGRESS, NULL);
+	if (qdf_unlikely(!ingress_block))
+		return QDISC_FILTER_PRIO_MISMATCH;
+
+	return __hdd_check_for_prio_filter_in_clsact_qdisc(ingress_block, prio);
+}
+#else
+static enum qdisc_filter_status
+hdd_check_for_prio_filter_in_clsact_qdisc(struct Qdisc *qdisc, uint32_t prio)
+{
+	const struct Qdisc_class_ops *cops;
+	struct tcf_block *ingress_block;
+
+	cops = qdisc->ops->cl_ops;
+	if (qdf_unlikely(!cops || !cops->tcf_block))
+		return QDISC_FILTER_PRIO_MISMATCH;
+
+	ingress_block = cops->tcf_block(qdisc, TC_H_MIN_INGRESS);
+	if (qdf_unlikely(!ingress_block))
+		return QDISC_FILTER_PRIO_MISMATCH;
+
+	return __hdd_check_for_prio_filter_in_clsact_qdisc(ingress_block, prio);
+}
+#endif
+
+/**
+ * hdd_rx_check_qdisc_for_adapter() - Check if any ingress qdisc is configured
+ *  for given adapter
+ * @adapter: pointer to HDD adapter context
+ * @rx_ctx_id: Rx context id
+ *
+ * The function checks if ingress qdisc is registered for a given
+ * net device.
+ *
+ * Return: None
+ */
+static void
+hdd_rx_check_qdisc_for_adapter(struct hdd_adapter *adapter)
+{
+	struct hdd_context *hdd_ctx = adapter->hdd_ctx;
+	struct netdev_queue *ingress_q;
+	struct Qdisc *ingress_qdisc;
+	bool disable_gro = false;
+	enum qdisc_filter_status ret;
+
+	if (!adapter->dev->ingress_queue)
+		goto reset_wl;
+
+	rcu_read_lock();
+
+	ingress_q = rcu_dereference(adapter->dev->ingress_queue);
+	if (qdf_unlikely(!ingress_q))
+		goto reset;
+
+	ingress_qdisc = rcu_dereference(ingress_q->qdisc);
+	if (qdf_unlikely(!ingress_qdisc))
+		goto reset;
+
+	if (qdf_str_eq(ingress_qdisc->ops->id, "ingress")) {
+		disable_gro = true;
+	} else if (qdf_str_eq(ingress_qdisc->ops->id, "clsact")) {
+		ret = hdd_check_for_prio_filter_in_clsact_qdisc(ingress_qdisc,
+					 hdd_ctx->dp_agg_param.tc_ingress_prio);
+
+		if (ret == QDISC_FILTER_RTNL_LOCK_FAIL) {
+			rcu_read_unlock();
+			return;
+		} else if (ret == QDISC_FILTER_PRIO_MISMATCH) {
+			goto reset;
+		}
+
+		disable_gro = true;
+	}
+
+	if (disable_gro) {
+		rcu_read_unlock();
+
+		if (qdf_likely(qdf_atomic_read(&adapter->gro_disallowed)))
+			return;
+
+		hdd_debug("ingress qdisc/filter configured disable GRO");
+		qdf_atomic_set(&adapter->gro_disallowed, 1);
+
+		return;
+	}
+
+reset:
+	rcu_read_unlock();
+
+reset_wl:
+	if (qdf_unlikely(qdf_atomic_read(&adapter->gro_disallowed))) {
+		hdd_debug("ingress qdisc/filter removed enable GRO");
+		qdf_atomic_set(&adapter->gro_disallowed, 0);
+	}
+}
+#else
+static inline void
+hdd_rx_check_qdisc_for_adapter(struct hdd_adapter *adapter)
+{
+}
+#endif
+
 static void __hdd_bus_bw_work_handler(struct hdd_context *hdd_ctx)
 {
 	struct hdd_adapter *adapter = NULL, *next_adapter = NULL,
@@ -9749,6 +9915,10 @@ static void __hdd_bus_bw_work_handler(struct hdd_context *hdd_ctx)
 			hdd_adapter_dev_put_debug(adapter, dbgid);
 			continue;
 		}
+
+		if (hdd_ctx->dp_agg_param.tc_based_dyn_gro ||
+		    hdd_ctx->ol_enable == CFG_DYNAMIC_GRO_ENABLED)
+			hdd_rx_check_qdisc_for_adapter(adapter);
 
 		tx_packets += HDD_BW_GET_DIFF(adapter->stats.tx_packets,
 					      adapter->prev_tx_packets);
@@ -15417,6 +15587,36 @@ void hdd_init_start_completion(void)
 	INIT_COMPLETION(wlan_start_comp);
 }
 
+#if defined CFG80211_USER_HINT_CELL_BASE_SELF_MANAGED || \
+                    (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 18, 0))
+static void hdd_inform_wifi_on(void)
+{
+	int ret;
+	struct hdd_context *hdd_ctx = cds_get_context(QDF_MODULE_ID_HDD);
+	struct osif_psoc_sync *psoc_sync;
+
+	hdd_nofl_debug("inform regdomain for wifi on");
+	ret = wlan_hdd_validate_context(hdd_ctx);
+	if (ret)
+		return;
+	if (!wlan_hdd_validate_modules_state(hdd_ctx))
+		return;
+	if (!hdd_ctx->wiphy)
+		return;
+	ret = osif_psoc_sync_op_start(wiphy_dev(hdd_ctx->wiphy), &psoc_sync);
+	if (ret)
+		return;
+	if (hdd_ctx->wiphy->registered)
+		hdd_send_wiphy_regd_sync_event(hdd_ctx);
+
+	osif_psoc_sync_op_stop(psoc_sync);
+}
+#else
+static void hdd_inform_wifi_on(void)
+{
+}
+#endif
+
 static int hdd_driver_load(void);
 static ssize_t wlan_hdd_state_ctrl_param_write(struct file *filp,
 						const char __user *user_buf,
@@ -15429,29 +15629,32 @@ static ssize_t wlan_hdd_state_ctrl_param_write(struct file *filp,
 	int ret;
 	unsigned long rc;
 	struct hdd_context *hdd_ctx = cds_get_context(QDF_MODULE_ID_HDD);
+	bool turning_on = false;
 
 	if (copy_from_user(buf, user_buf, 3)) {
-		pr_debug("Failed to read buffer\n");
+		pr_err("Failed to read buffer\n");
 		return -EINVAL;
 	}
 
 	if (strncmp(buf, wlan_off_str, strlen(wlan_off_str)) == 0) {
-		pr_debug("Wifi turning off from UI\n");
+		hdd_info("Wifi turning off from UI\n");
 		hdd_inform_wifi_off();
 		goto exit;
 	}
 
-	if (strncmp(buf, wlan_on_str, strlen(wlan_on_str)) == 0)
-		pr_debug("Wifi Turning On from UI\n");
+	if (strncmp(buf, wlan_on_str, strlen(wlan_on_str)) == 0) {
+		hdd_info("Wifi Turning On from UI\n");
+		turning_on = true;
+	}
 
 	if (strncmp(buf, wlan_on_str, strlen(wlan_on_str)) != 0) {
-		pr_debug("Invalid value received from framework");
+		pr_err("Invalid value received from framework");
 		goto exit;
 	}
 
 	if (!hdd_loaded) {
 		if (hdd_driver_load()) {
-			pr_debug("%s: Failed to init hdd module\n", __func__);
+			pr_err("%s: Failed to init hdd module\n", __func__);
 			goto exit;
 		}
 	}
@@ -15460,7 +15663,7 @@ static ssize_t wlan_hdd_state_ctrl_param_write(struct file *filp,
 		rc = wait_for_completion_timeout(&wlan_start_comp,
 				msecs_to_jiffies(HDD_WLAN_START_WAIT_TIME));
 		if (!rc) {
-			pr_debug("Timed-out!!");
+			pr_err("Timed-out!!");
 			ret = -EINVAL;
 			return ret;
 		}
@@ -15472,8 +15675,10 @@ static ssize_t wlan_hdd_state_ctrl_param_write(struct file *filp,
 	 */
 	if (hdd_ctx)
 		hdd_psoc_idle_timer_stop(hdd_ctx);
-
 exit:
+	if (turning_on)
+		hdd_inform_wifi_on();
+
 	return count;
 }
 
@@ -15518,20 +15723,20 @@ static int  wlan_hdd_state_ctrl_param_create(void)
 
 	ret = alloc_chrdev_region(&device, 0, dev_num, "qcwlanstate");
 	if (ret) {
-		pr_debug("Failed to register qcwlanstate");
+		pr_err("Failed to register qcwlanstate");
 		goto dev_alloc_err;
 	}
 	wlan_hdd_state_major = MAJOR(device);
 
 	class = class_create(THIS_MODULE, WLAN_MODULE_NAME);
 	if (IS_ERR(class)) {
-		pr_debug("wlan_hdd_state class_create error");
+		pr_err("wlan_hdd_state class_create error");
 		goto class_err;
 	}
 
 	dev = device_create(class, NULL, device, NULL, WLAN_MODULE_NAME);
 	if (IS_ERR(dev)) {
-		pr_debug("wlan_hdd_statedevice_create error");
+		pr_err("wlan_hdd_statedevice_create error");
 		goto err_class_destroy;
 	}
 
@@ -15541,11 +15746,11 @@ static int  wlan_hdd_state_ctrl_param_create(void)
 
 	ret = cdev_add(&wlan_hdd_state_cdev, device, dev_num);
 	if (ret) {
-		pr_debug("Failed to add cdev error");
+		pr_err("Failed to add cdev error");
 		goto cdev_add_err;
 	}
 
-	pr_debug("wlan_hdd_state %s major(%d) initialized",
+	pr_info("wlan_hdd_state %s major(%d) initialized",
 		WLAN_MODULE_NAME, wlan_hdd_state_major);
 
 	return 0;
@@ -15567,7 +15772,7 @@ static void wlan_hdd_state_ctrl_param_destroy(void)
 	class_destroy(class);
 	unregister_chrdev_region(device, dev_num);
 
-	pr_debug("Device node unregistered");
+	pr_info("Device node unregistered");
 }
 
 /**
@@ -15829,13 +16034,13 @@ static QDF_STATUS hdd_qdf_print_init(void)
 
 	status = qdf_print_setup();
 	if (QDF_IS_STATUS_ERROR(status)) {
-		pr_debug("Failed qdf_print_setup; status:%u\n", status);
+		pr_err("Failed qdf_print_setup; status:%u\n", status);
 		return status;
 	}
 
 	qdf_print_idx = qdf_print_ctrl_register(cinfo, NULL, NULL, "MCL_WLAN");
 	if (qdf_print_idx < 0) {
-		pr_debug("Failed to register for qdf_print_ctrl\n");
+		pr_err("Failed to register for qdf_print_ctrl\n");
 		return QDF_STATUS_E_FAILURE;
 	}
 
@@ -15945,7 +16150,7 @@ static bool is_monitor_mode_supported(void)
 #else
 static bool is_monitor_mode_supported(void)
 {
-	pr_debug("Monitor mode not supported!");
+	pr_err("Monitor mode not supported!");
 	return false;
 }
 #endif
@@ -15958,7 +16163,7 @@ static bool is_epping_mode_supported(void)
 #else
 static bool is_epping_mode_supported(void)
 {
-	pr_debug("Epping mode not supported!");
+	pr_err("Epping mode not supported!");
 	return false;
 }
 #endif
@@ -15971,7 +16176,7 @@ static bool is_ftm_mode_supported(void)
 #else
 static bool is_ftm_mode_supported(void)
 {
-	pr_debug("FTM mode not supported!");
+	pr_err("FTM mode not supported!");
 	return false;
 }
 #endif
@@ -16273,7 +16478,7 @@ static int hdd_driver_load(void)
 	QDF_STATUS status;
 	int errno;
 
-	pr_debug("%s: Loading driver v%s\n", WLAN_MODULE_NAME,
+	pr_err("%s: Loading driver v%s\n", WLAN_MODULE_NAME,
 	       g_wlan_driver_version);
 
 	status = hdd_qdf_init();
@@ -16378,7 +16583,7 @@ static void hdd_driver_unload(void)
 	QDF_STATUS status;
 	void *hif_ctx;
 
-	pr_debug("%s: Unloading driver v%s\n", WLAN_MODULE_NAME,
+	pr_info("%s: Unloading driver v%s\n", WLAN_MODULE_NAME,
 		QWLAN_VERSIONSTR);
 
 	/*
@@ -16465,7 +16670,7 @@ static int hdd_module_init(void)
 
 	ret = wlan_hdd_state_ctrl_param_create();
 	if (ret)
-		pr_debug("wlan_hdd_state_create:%x\n", ret);
+		pr_err("wlan_hdd_state_create:%x\n", ret);
 
 	return ret;
 }
@@ -16498,7 +16703,7 @@ static int con_mode_handler_ftm(const char *kmessage,
 	ret = param_set_int(kmessage, kp);
 
 	if (con_mode_ftm != QDF_GLOBAL_FTM_MODE) {
-		pr_debug("Only FTM mode supported!");
+		pr_err("Only FTM mode supported!");
 		return -ENOTSUPP;
 	}
 
@@ -16517,7 +16722,7 @@ static int con_mode_handler_epping(const char *kmessage,
 	ret = param_set_int(kmessage, kp);
 
 	if (con_mode_epping != QDF_GLOBAL_EPPING_MODE) {
-		pr_debug("Only EPPING mode supported!");
+		pr_err("Only EPPING mode supported!");
 		return -ENOTSUPP;
 	}
 

@@ -104,8 +104,6 @@ ifdef CONFIG_WCD9XXX_CODEC_CORE
 	CORE_OBJS += wcd9335-tables.o
 	CORE_OBJS += msm-cdc-pinctrl.o
 	CORE_OBJS += msm-cdc-supply.o
-	CORE_OBJS += wcd934x/wcd934x-regmap.o
-	CORE_OBJS += wcd934x/wcd934x-tables.o
 endif
 
 ifdef CONFIG_WCD9XXX_CODEC_CORE_V2
@@ -171,7 +169,7 @@ ifdef CONFIG_SND_SOC_WCD_IRQ
 	CORE_OBJS += wcd-irq.o
 endif
 
-LINUX_INC +=	-Iinclude/linux
+LINUX_INC +=	-I$(srctree)/include/linux
 
 INCS +=		$(COMMON_INC) \
 		$(UAPI_INC)
@@ -187,7 +185,6 @@ CDEFINES +=	-DANI_LITTLE_BYTE_ENDIAN \
 		-DANI_OS_TYPE_ANDROID=6 \
 		-DPTT_SOCK_SVC_ENABLE \
 		-Wall\
-		-Werror\
 		-D__linux__
 
 KBUILD_CPPFLAGS += $(CDEFINES)
@@ -217,7 +214,6 @@ ifeq ($(KERNEL_BUILD), 0)
 endif
 
 ifeq ($(KERNEL_BUILD), 1)
-	obj-y	+= wcd934x/
 	obj-y	+= wcd937x/
 	obj-y	+= tfa98xx-v6/
         obj-y   += aw882xx/

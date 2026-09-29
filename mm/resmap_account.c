@@ -92,7 +92,10 @@ static struct vm_area_struct *remove_vma(struct vm_area_struct *vma)
 	might_sleep();
 	if (vma->vm_ops && vma->vm_ops->close)
 		vma->vm_ops->close(vma);
-	put_vma(vma);
+	if (vma->vm_file)
+		fput(vma->vm_file);
+	mpol_put(vma_policy(vma));
+	kmem_cache_free(vm_area_cachep, vma);
 	return next;
 }
 
@@ -202,7 +205,6 @@ int dup_reserved_mmap(struct mm_struct *mm, struct mm_struct *oldmm,
 		if (!tmp)
 			goto fail_nomem;
 		*tmp = *mpnt;
-		INIT_VMA(tmp);
 		retval = vma_dup_policy(mpnt, tmp);
 		if (retval)
 			goto fail_nomem_policy;
@@ -369,7 +371,7 @@ void trigger_svm_oom_event(struct mm_struct *mm, bool brk_risk, bool is_locked)
 		return;
 	}
 
-	current_time_ns = ktime_get_boot_ns();
+	current_time_ns = ktime_get_boottime_ns();
 	if ((current_time_ns > current->real_start_time) ||
 			(current_time_ns - current->real_start_time >= TRIGGER_TIME_NS))
 		over_time = 1;

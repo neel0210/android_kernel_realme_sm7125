@@ -2004,7 +2004,7 @@ static QDF_STATUS hdd_dis_connect_handler(struct hdd_adapter *adapter,
 				reason = roam_info->reasonCode;
 				if (reason ==
 				    eSIR_MAC_PEER_STA_REQ_LEAVING_BSS_REASON)
-					pr_debug("wlan: disconnected due to poor signal, rssi is %d dB\n",
+					pr_info("wlan: disconnected due to poor signal, rssi is %d dB\n",
 						roam_info->rxRssi);
 			}
 			ucfg_mlme_get_discon_reason_n_from_ap(hdd_ctx->psoc,
@@ -2384,11 +2384,9 @@ QDF_STATUS hdd_roam_register_sta(struct hdd_adapter *adapter,
 		hdd_conn_set_authenticated(adapter, true);
 		hdd_objmgr_set_peer_mlme_auth_state(adapter->vdev, true);
 	} else {
-#ifdef WLAN_DEBUG
 		hdd_debug("ULA auth Sta: " QDF_MAC_ADDR_FMT
 			  " Changing TL state to CONNECTED at Join time",
 			  QDF_MAC_ADDR_REF(txrx_desc.peer_addr.bytes));
-#endif
 
 		qdf_status = hdd_conn_change_peer_state(
 						adapter, roam_info,

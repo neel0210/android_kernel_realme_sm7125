@@ -55,8 +55,15 @@
 #define SDE_ROTATOR_DEGREE_180		180
 #define SDE_ROTATOR_DEGREE_90		90
 
+/* Inline rotator qos request */
+#define SDE_ROTATOR_ADD_REQUEST		1
+#define SDE_ROTATOR_REMOVE_REQUEST		0
+
+
 static void sde_rotator_submit_handler(struct kthread_work *work);
 static void sde_rotator_retire_handler(struct kthread_work *work);
+static void sde_rotator_pm_qos_request(struct sde_rotator_device *rot_dev,
+					 bool add_request);
 #ifdef CONFIG_COMPAT
 static long sde_rotator_compat_ioctl32(struct file *file,
 	unsigned int cmd, unsigned long arg);
@@ -1037,6 +1044,8 @@ struct sde_rotator_ctx *sde_rotator_ctx_open(
 		SDEDEV_DBG(ctx->rot_dev->dev, "timeline is not available\n");
 
 	sde_rot_mgr_lock(rot_dev->mgr);
+	sde_rotator_pm_qos_request(rot_dev,
+				 SDE_ROTATOR_ADD_REQUEST);
 	ret = sde_rotator_session_open(rot_dev->mgr, &ctx->private,
 			ctx->session_id, &ctx->work_queue);
 	if (ret < 0) {
@@ -1161,6 +1170,8 @@ static int sde_rotator_ctx_release(struct sde_rotator_ctx *ctx,
 	}
 	SDEDEV_DBG(rot_dev->dev, "release session s:%d\n", session_id);
 	sde_rot_mgr_lock(rot_dev->mgr);
+	sde_rotator_pm_qos_request(rot_dev,
+			SDE_ROTATOR_REMOVE_REQUEST);
 	sde_rotator_session_close(rot_dev->mgr, ctx->private, session_id);
 	sde_rot_mgr_unlock(rot_dev->mgr);
 	SDEDEV_DBG(rot_dev->dev, "release retire work s:%d\n", session_id);
@@ -1273,6 +1284,104 @@ static bool sde_rotator_is_request_retired(struct sde_rotator_request *request)
 	SDEROT_DBG("sequence:%u/%u\n", sequence_id, ctx->retired_sequence_id);
 
 	return retire_delta >= 0;
+}
+
+static void sde_rotator_pm_qos_remove(struct sde_rot_data_type *rot_mdata)
+{
+	struct pm_qos_request *req;
+	u32 cpu_mask;
+
+	if (!rot_mdata) {
+		SDEROT_DBG("invalid rot device or context\n");
+		return;
+	}
+
+	cpu_mask = rot_mdata->rot_pm_qos_cpu_mask;
+
+	if (!cpu_mask)
+		return;
+
+	req = &rot_mdata->pm_qos_rot_cpu_req;
+	pm_qos_remove_request(req);
+}
+
+void sde_rotator_pm_qos_add(struct sde_rot_data_type *rot_mdata)
+{
+	struct pm_qos_request *req;
+	u32 cpu_mask;
+	int cpu;
+
+	if (!rot_mdata) {
+		SDEROT_DBG("invalid rot device or context\n");
+		return;
+	}
+
+	cpu_mask = rot_mdata->rot_pm_qos_cpu_mask;
+
+	if (!cpu_mask)
+		return;
+
+	req = &rot_mdata->pm_qos_rot_cpu_req;
+	req->type = PM_QOS_REQ_AFFINE_CORES;
+	cpumask_empty(&req->cpus_affine);
+	for_each_possible_cpu(cpu) {
+		if ((1 << cpu) & cpu_mask)
+			cpumask_set_cpu(cpu, &req->cpus_affine);
+	}
+	pm_qos_add_request(req, PM_QOS_CPU_DMA_LATENCY,
+		PM_QOS_DEFAULT_VALUE);
+
+	SDEROT_DBG("rotator pmqos add mask %x latency %x\n",
+		rot_mdata->rot_pm_qos_cpu_mask,
+		rot_mdata->rot_pm_qos_cpu_dma_latency);
+}
+
+static void sde_rotator_pm_qos_request(struct sde_rotator_device *rot_dev,
+					 bool add_request)
+{
+	u32 cpu_mask;
+	u32 cpu_dma_latency;
+	bool changed = false;
+
+	if (!rot_dev) {
+		SDEROT_DBG("invalid rot device or context\n");
+		return;
+	}
+
+	cpu_mask = rot_dev->mdata->rot_pm_qos_cpu_mask;
+	cpu_dma_latency = rot_dev->mdata->rot_pm_qos_cpu_dma_latency;
+
+	if (!cpu_mask)
+		return;
+
+	if (add_request) {
+		if (rot_dev->mdata->rot_pm_qos_cpu_count == 0)
+			changed = true;
+		rot_dev->mdata->rot_pm_qos_cpu_count++;
+	} else {
+		if (rot_dev->mdata->rot_pm_qos_cpu_count != 0) {
+			rot_dev->mdata->rot_pm_qos_cpu_count--;
+			if (rot_dev->mdata->rot_pm_qos_cpu_count == 0)
+				changed = true;
+		} else {
+			SDEROT_DBG("%s: ref_count is not balanced\n",
+				__func__);
+		}
+	}
+
+	if (!changed)
+		return;
+
+	SDEROT_EVTLOG(add_request, cpu_mask, cpu_dma_latency);
+
+	if (!add_request) {
+		pm_qos_update_request(&rot_dev->mdata->pm_qos_rot_cpu_req,
+			PM_QOS_DEFAULT_VALUE);
+		return;
+	}
+
+	pm_qos_update_request(&rot_dev->mdata->pm_qos_rot_cpu_req,
+		cpu_dma_latency);
 }
 
 /*
@@ -1572,6 +1681,7 @@ int sde_rotator_inline_commit(void *handle, struct sde_rotator_inline_cmd *cmd,
 	struct sde_rotator_request *request = NULL;
 	struct sde_rot_entry_container *req = NULL;
 	struct sde_rotation_config rotcfg;
+	struct sde_rot_trace_entry rot_trace;
 	ktime_t *ts;
 	u32 flags = 0;
 	int i, ret = 0;
@@ -1773,24 +1883,27 @@ int sde_rotator_inline_commit(void *handle, struct sde_rotator_inline_cmd *cmd,
 		req->retire_kw = ctx->work_queue.rot_kw;
 		req->retire_work = &request->retire_work;
 
+		/* Set values to pass to trace */
+		rot_trace.wb_idx = req->entries[0].item.wb_idx;
+		rot_trace.flags = req->entries[0].item.flags;
+		rot_trace.input_format = req->entries[0].item.input.format;
+		rot_trace.input_width = req->entries[0].item.input.width;
+		rot_trace.input_height = req->entries[0].item.input.height;
+		rot_trace.src_x = req->entries[0].item.src_rect.x;
+		rot_trace.src_y = req->entries[0].item.src_rect.y;
+		rot_trace.src_w = req->entries[0].item.src_rect.w;
+		rot_trace.src_h = req->entries[0].item.src_rect.h;
+		rot_trace.output_format = req->entries[0].item.output.format;
+		rot_trace.output_width = req->entries[0].item.output.width;
+		rot_trace.output_height = req->entries[0].item.output.height;
+		rot_trace.dst_x = req->entries[0].item.dst_rect.x;
+		rot_trace.dst_y = req->entries[0].item.dst_rect.y;
+		rot_trace.dst_w = req->entries[0].item.dst_rect.w;
+		rot_trace.dst_h = req->entries[0].item.dst_rect.h;
+
+
 		trace_rot_entry_fence(
-			ctx->session_id, cmd->sequence_id,
-			req->entries[0].item.wb_idx,
-			req->entries[0].item.flags,
-			req->entries[0].item.input.format,
-			req->entries[0].item.input.width,
-			req->entries[0].item.input.height,
-			req->entries[0].item.src_rect.x,
-			req->entries[0].item.src_rect.y,
-			req->entries[0].item.src_rect.w,
-			req->entries[0].item.src_rect.h,
-			req->entries[0].item.output.format,
-			req->entries[0].item.output.width,
-			req->entries[0].item.output.height,
-			req->entries[0].item.dst_rect.x,
-			req->entries[0].item.dst_rect.y,
-			req->entries[0].item.dst_rect.w,
-			req->entries[0].item.dst_rect.h);
+			ctx->session_id, cmd->sequence_id, &rot_trace);
 
 		ret = sde_rotator_handle_request_common(
 				rot_dev->mgr, ctx->private, req);
@@ -3012,6 +3125,7 @@ static int sde_rotator_process_buffers(struct sde_rotator_ctx *ctx,
 	struct sde_rotator_statistics *stats = &rot_dev->stats;
 	struct sde_rotator_vbinfo *vbinfo_out;
 	struct sde_rotator_vbinfo *vbinfo_cap;
+	struct sde_rot_trace_entry rot_trace;
 	ktime_t *ts;
 	int ret;
 
@@ -3053,21 +3167,27 @@ static int sde_rotator_process_buffers(struct sde_rotator_ctx *ctx,
 
 	ts[SDE_ROTATOR_TS_FENCE] = ktime_get();
 
+	/* Set values to pass to trace */
+	rot_trace.wb_idx = ctx->fh.prio;
+	rot_trace.flags = (ctx->rotate << 0) | (ctx->hflip << 8) |
+			(ctx->hflip << 9) | (ctx->secure << 10);
+	rot_trace.input_format = ctx->format_out.fmt.pix.pixelformat;
+	rot_trace.input_width = ctx->format_out.fmt.pix.width;
+	rot_trace.input_height = ctx->format_out.fmt.pix.height;
+	rot_trace.src_x = ctx->crop_out.left;
+	rot_trace.src_y = ctx->crop_out.top;
+	rot_trace.src_w = ctx->crop_out.width;
+	rot_trace.src_h = ctx->crop_out.height;
+	rot_trace.output_format = ctx->format_cap.fmt.pix.pixelformat;
+	rot_trace.output_width = ctx->format_cap.fmt.pix.width;
+	rot_trace.output_height = ctx->format_cap.fmt.pix.height;
+	rot_trace.dst_x = ctx->crop_cap.left;
+	rot_trace.dst_y = ctx->crop_cap.top;
+	rot_trace.dst_w = ctx->crop_cap.width;
+	rot_trace.dst_h = ctx->crop_cap.height;
+
 	trace_rot_entry_fence(
-		ctx->session_id, vbinfo_cap->fence_ts,
-		ctx->fh.prio,
-		(ctx->rotate << 0) | (ctx->hflip << 8) |
-			(ctx->hflip << 9) | (ctx->secure << 10),
-		ctx->format_out.fmt.pix.pixelformat,
-		ctx->format_out.fmt.pix.width,
-		ctx->format_out.fmt.pix.height,
-		ctx->crop_out.left, ctx->crop_out.top,
-		ctx->crop_out.width, ctx->crop_out.height,
-		ctx->format_cap.fmt.pix.pixelformat,
-		ctx->format_cap.fmt.pix.width,
-		ctx->format_cap.fmt.pix.height,
-		ctx->crop_cap.left, ctx->crop_cap.top,
-		ctx->crop_cap.width, ctx->crop_cap.height);
+		ctx->session_id, vbinfo_cap->fence_ts, &rot_trace);
 
 	if (vbinfo_out->fence) {
 		sde_rot_mgr_unlock(rot_dev->mgr);
@@ -3612,6 +3732,7 @@ static int sde_rotator_remove(struct platform_device *pdev)
 		return 0;
 	}
 
+	sde_rotator_pm_qos_remove(rot_dev->mdata);
 	for (i = MAX_ROT_OPEN_SESSION - 1; i >= 0; i--)
 		kthread_stop(rot_dev->rot_thread[i]);
 	sde_rotator_destroy_debugfs(rot_dev->debugfs_root);

@@ -12,7 +12,7 @@ dtc-objs	+= dtc-lexer.lex.o dtc-parser.tab.o
 
 # Source files need to get at the userspace version of libfdt_env.h to compile
 
-HOSTCFLAGS_DTC := -I$(src) -I$(src)/libfdt
+HOSTCFLAGS_DTC := -I $(srctree)/$(src) -I $(srctree)/$(src)/libfdt
 
 HOSTCFLAGS_checks.o := $(HOSTCFLAGS_DTC)
 HOSTCFLAGS_data.o := $(HOSTCFLAGS_DTC)
@@ -29,3 +29,6 @@ HOSTCFLAGS_dtc-parser.tab.o := $(HOSTCFLAGS_DTC)
 
 # dependencies on generated files need to be listed explicitly
 $(obj)/dtc-lexer.lex.o: $(obj)/dtc-parser.tab.h
+
+# generated files need to be cleaned explicitly
+clean-files	:= dtc-lexer.lex.c dtc-parser.tab.c dtc-parser.tab.h

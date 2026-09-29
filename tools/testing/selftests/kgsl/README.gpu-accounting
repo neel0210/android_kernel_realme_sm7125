@@ -1,0 +1,50 @@
+A6xx GPU work-period accounting test
+==================================
+
+Backported from Qualcomm KGSL at commit
+f374d957ba30cd3107f1ab007712e7f27b07def9:
+https://github.com/qualcomm-linux/kgsl/tree/f374d957ba30cd3107f1ab007712e7f27b07def9
+See kgsl.c, kgsl_drawobj.c, kgsl_power_trace.h, adreno_dispatch.c and
+adreno_a6xx_ringbuffer.c. This device uses the older unified ringbuffer path.
+
+The counters come from CP_ALWAYS_ON_CONTEXT, not CPU submission latency.
+A6xx context ticks exclude time spent preempted. Per-UID totals use the
+upstream 19.2 MHz conversion and 900 ms reporting interval. Secure and
+fault-replayed work is excluded. Reset/stale counter pairs are discarded.
+The profile buffer grows to 8 KiB to retain its previous entry capacity.
+Non-A6xx GPUs do not acquire an invented active-time estimate.
+
+Adaptations: reporting references are released after leaving the UID list
+lock, without coalescing deferred puts; teardown stops and drains reporting;
+failed process initialization releases accounting state. Existing kernel
+and vendor thermal/power policies are unchanged.
+
+Host lifetime/arithmetic check (mock kernel primitives, ASan and UBSan):
+  python3 tools/testing/selftests/kgsl/test_work_period.py
+
+Device validation, after building and booting BOTH backports:
+1. Run the BPF test described in ../bpf/README.atomics as root.
+2. Copy collect_gpu_accounting.sh to /data/local/tmp, then run as root:
+     sh /data/local/tmp/collect_gpu_accounting.sh
+   Scroll and switch between two apps while it captures. This uses a private
+   ftrace instance and does not clear the system trace buffer.
+3. Pull /data/local/tmp/gpu-accounting to the host and run:
+     python3 tools/testing/selftests/kgsl/check_work_period_trace.py \
+       gpu-accounting/work-period.trace
+4. In logcat, confirm gpuWork.bpf no longer fails loading. Check bpf-paths.txt
+   for GPU program/maps. Nonzero ftrace events alone do not prove BPF attached.
+5. Repeat with a GPU-heavy app, app exit, lock/unlock and suspend/resume.
+   Check dmesg for GPU faults/page faults and KASAN/lockdep reports when enabled.
+   Verify protected video playback still works. Compare workload and idle
+   battery behavior with the previous kernel.
+
+Expected trace layout: gpu_id offset 8, uid 12, start_time_ns 16,
+end_time_ns 24, total_active_duration_ns 32. Periods for the same GPU/UID must
+not overlap, active time must be positive and <= the period, and the period
+must be <= 1 second. The validator checks these constraints. Kernel worker
+starvation can delay the upstream timer/work reporting scheme; a period over
+1 second or missing events is a failed device test, not something to ignore.
+
+This is a backport candidate for separate kernel testing, not a claim of
+hardware validation. Full kernel compilation was unavailable on the macOS
+host (kernel configuration tool requires Linux features.h).

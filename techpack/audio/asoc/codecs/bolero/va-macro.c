@@ -589,11 +589,11 @@ static int va_macro_enable_dec(struct snd_soc_dapm_widget *w,
 			snd_soc_update_bits(codec, hpf_gate_reg, 0x02, 0x00);
 		}
 		/* schedule work queue to Remove Mute */
-		queue_delayed_work(system_power_efficient_wq, &va_priv->va_mute_dwork[decimator].dwork,
+		schedule_delayed_work(&va_priv->va_mute_dwork[decimator].dwork,
 				      msecs_to_jiffies(va_tx_unmute_delay));
 		if (va_priv->va_hpf_work[decimator].hpf_cut_off_freq !=
 							CF_MIN_3DB_150HZ)
-			queue_delayed_work(system_power_efficient_wq, 
+			schedule_delayed_work(
 					&va_priv->va_hpf_work[decimator].dwork,
 					msecs_to_jiffies(300));
 		/* apply gain after decimator is enabled */
@@ -1325,30 +1325,30 @@ static const struct snd_soc_dapm_route va_audio_map[] = {
 };
 
 static const struct snd_kcontrol_new va_macro_snd_controls[] = {
-	SOC_SINGLE_SX_TLV("VA_DEC0 Volume",
+	SOC_SINGLE_S8_TLV("VA_DEC0 Volume",
 			  BOLERO_CDC_VA_TX0_TX_VOL_CTL,
-			  0, -84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("VA_DEC1 Volume",
+			  -84, 40, digital_gain),
+	SOC_SINGLE_S8_TLV("VA_DEC1 Volume",
 			  BOLERO_CDC_VA_TX1_TX_VOL_CTL,
-			  0, -84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("VA_DEC2 Volume",
+			  -84, 40, digital_gain),
+	SOC_SINGLE_S8_TLV("VA_DEC2 Volume",
 			  BOLERO_CDC_VA_TX2_TX_VOL_CTL,
-			  0, -84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("VA_DEC3 Volume",
+			  -84, 40, digital_gain),
+	SOC_SINGLE_S8_TLV("VA_DEC3 Volume",
 			  BOLERO_CDC_VA_TX3_TX_VOL_CTL,
-			  0, -84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("VA_DEC4 Volume",
+			  -84, 40, digital_gain),
+	SOC_SINGLE_S8_TLV("VA_DEC4 Volume",
 			  BOLERO_CDC_VA_TX4_TX_VOL_CTL,
-			  0, -84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("VA_DEC5 Volume",
+			  -84, 40, digital_gain),
+	SOC_SINGLE_S8_TLV("VA_DEC5 Volume",
 			  BOLERO_CDC_VA_TX5_TX_VOL_CTL,
-			  0, -84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("VA_DEC6 Volume",
+			  -84, 40, digital_gain),
+	SOC_SINGLE_S8_TLV("VA_DEC6 Volume",
 			  BOLERO_CDC_VA_TX6_TX_VOL_CTL,
-			  0, -84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("VA_DEC7 Volume",
+			  -84, 40, digital_gain),
+	SOC_SINGLE_S8_TLV("VA_DEC7 Volume",
 			  BOLERO_CDC_VA_TX7_TX_VOL_CTL,
-			  0, -84, 40, digital_gain),
+			  -84, 40, digital_gain),
 };
 
 static int va_macro_validate_dmic_sample_rate(u32 dmic_sample_rate,

@@ -144,14 +144,10 @@
  */
 #define POLL_ITERATIONS		1000
 
-#ifdef CONFIG_IPC_LOGGING
 #define IPC_LOG_MSG(ctx, x...) do { \
 	if (ctx) \
 		ipc_log_string(ctx, x); \
 } while (0)
-#else
-#define IPC_LOG_MSG(x, y...) // no-ops
-#endif
 
 #define DMA_RX_BUF_SIZE		(2048)
 #define UART_CONSOLE_RX_WM	(2)
@@ -3004,7 +3000,6 @@ static void console_unregister(struct uart_driver *drv)
 }
 #endif /* defined(CONFIG_SERIAL_CORE_CONSOLE) || defined(CONFIG_CONSOLE_POLL) */
 
-#if defined(CONFIG_DEBUG_FS) && defined(CONFIG_IPC_LOGGING)
 static void msm_geni_serial_debug_init(struct uart_port *uport, bool console)
 {
 	struct msm_geni_serial_port *msm_port = GET_DEV_PORT(uport);
@@ -3063,11 +3058,6 @@ static void msm_geni_serial_debug_init(struct uart_port *uport, bool console)
 		}
 	}
 }
-#else
-static void msm_geni_serial_debug_init(struct uart_port *uport, bool console)
-{
-}
-#endif
 
 static void msm_geni_serial_cons_pm(struct uart_port *uport,
 		unsigned int new_state, unsigned int old_state)
@@ -3498,9 +3488,6 @@ static int msm_geni_serial_probe(struct platform_device *pdev)
 	if (ret)
 		goto exit_geni_serial_probe;
 
-	/* Set the flag to prevent to set up the console at runtime */
-	console_set_on_cmdline = 1;
-
 	ret = uart_add_one_port(drv, uport);
 	if (ret)
 		goto exit_geni_serial_probe;
@@ -3615,7 +3602,7 @@ exit_runtime_resume:
 	return ret;
 }
 
-static int msm_geni_serial_sys_suspend(struct device *dev)
+static int msm_geni_serial_sys_suspend_noirq(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct msm_geni_serial_port *port = platform_get_drvdata(pdev);
@@ -3644,7 +3631,7 @@ static int msm_geni_serial_sys_suspend(struct device *dev)
 	return 0;
 }
 
-static int msm_geni_serial_sys_resume(struct device *dev)
+static int msm_geni_serial_sys_resume_noirq(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct msm_geni_serial_port *port = platform_get_drvdata(pdev);
@@ -3696,12 +3683,12 @@ static int msm_geni_serial_runtime_resume(struct device *dev)
 	return 0;
 }
 
-static int msm_geni_serial_sys_suspend(struct device *dev)
+static int msm_geni_serial_sys_suspend_noirq(struct device *dev)
 {
 	return 0;
 }
 
-static int msm_geni_serial_sys_resume(struct device *dev)
+static int msm_geni_serial_sys_resume_noirq(struct device *dev)
 {
 	return 0;
 }
@@ -3715,9 +3702,9 @@ static int msm_geni_serial_sys_hib_resume_noirq(struct device *dev)
 static const struct dev_pm_ops msm_geni_serial_pm_ops = {
 	.runtime_suspend = msm_geni_serial_runtime_suspend,
 	.runtime_resume = msm_geni_serial_runtime_resume,
-	.suspend_noirq = msm_geni_serial_sys_suspend,
-	.resume_noirq = msm_geni_serial_sys_resume,
-	.freeze = msm_geni_serial_sys_suspend,
+	.suspend_noirq = msm_geni_serial_sys_suspend_noirq,
+	.resume_noirq = msm_geni_serial_sys_resume_noirq,
+	.freeze = msm_geni_serial_sys_suspend_noirq,
 	.restore = msm_geni_serial_sys_hib_resume_noirq,
 	.thaw = msm_geni_serial_sys_hib_resume_noirq,
 };
@@ -3733,8 +3720,8 @@ static void msm_geni_serial_ssr_down(struct device *dev)
 	port->uart_ssr.is_ssr_down = true;
 	ret = pm_runtime_force_suspend(uport->dev);
 	if (ret) {
-		dev_err(uport->dev, "%s:force suspend failed %d\n",
-						ret, __func__);
+		dev_err(uport->dev, "%s:force suspend failed %d\n", __func__,
+			ret);
 		goto exit;
 	}
 

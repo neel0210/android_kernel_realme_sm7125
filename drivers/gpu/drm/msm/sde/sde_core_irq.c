@@ -631,7 +631,7 @@ int sde_core_irq_domain_add(struct sde_kms *sde_kms)
 	struct irq_domain *domain;
 
 	if (!sde_kms->dev || !sde_kms->dev->dev) {
-		pr_debug("invalid device handles\n");
+		pr_err("invalid device handles\n");
 		return -EINVAL;
 	}
 
@@ -640,7 +640,7 @@ int sde_core_irq_domain_add(struct sde_kms *sde_kms)
 	domain = irq_domain_add_linear(dev->of_node, 32,
 			&sde_core_irqdomain_ops, sde_kms);
 	if (!domain) {
-		pr_debug("failed to add irq_domain\n");
+		pr_err("failed to add irq_domain\n");
 		return -EINVAL;
 	}
 
@@ -661,6 +661,15 @@ int sde_core_irq_domain_fini(struct sde_kms *sde_kms)
 
 irqreturn_t sde_core_irq(struct sde_kms *sde_kms)
 {
+	/*
+	 * Read interrupt status from all sources. Interrupt status are
+	 * stored within hw_intr.
+	 * Function will also clear the interrupt status after reading.
+	 * Individual interrupt status bit will only get stored if it
+	 * is enabled.
+	 */
+	sde_kms->hw_intr->ops.get_interrupt_statuses(sde_kms->hw_intr);
+
 	/*
 	 * Dispatch to HW driver to handle interrupt lookup that is being
 	 * fired. When matching interrupt is located, HW driver will call to

@@ -84,7 +84,7 @@ const struct msm_vidc_gov_data DEFAULT_BUS_VOTE = {
 	.data_count = 0,
 };
 
-const int max_packets = 480; /* 16 sessions x 30 packets */
+const int max_packets = 1000;
 
 static void venus_hfi_pm_handler(struct work_struct *work);
 static DECLARE_DELAYED_WORK(venus_hfi_pm_work, venus_hfi_pm_handler);
@@ -164,7 +164,7 @@ static void __dump_packet(u8 *packet, enum vidc_msg_prio log_level)
 	 * row must contain enough for 0xdeadbaad * 8 to be converted into
 	 * "de ad ba ab " * 8 + '\0'
 	 */
-	char row[3 * 32];
+	char row[3 * row_size];
 
 	for (c = 0; c * row_size < packet_size; ++c) {
 		int bytes_to_read = ((c + 1) * row_size > packet_size) ?
@@ -2228,6 +2228,7 @@ err_core_init:
 	__set_state(dev, VENUS_STATE_DEINIT);
 	__unload_fw(dev);
 err_load_fw:
+err_no_mem:
 	dprintk(VIDC_ERR, "Core init failed\n");
 	mutex_unlock(&dev->lock);
 	return rc;
@@ -4737,6 +4738,7 @@ fail_enable_clks:
 	__disable_regulators(device);
 fail_enable_gdsc:
 	__unvote_buses(device);
+fail_vote_buses:
 	device->power_enabled = false;
 	return rc;
 }

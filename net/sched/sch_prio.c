@@ -52,7 +52,6 @@ prio_classify(struct sk_buff *skb, struct Qdisc *sch, int *qerr)
 		case TC_ACT_QUEUED:
 		case TC_ACT_TRAP:
 			*qerr = NET_XMIT_SUCCESS | __NET_XMIT_STOLEN;
-			/* fall through */
 		case TC_ACT_SHOT:
 			return NULL;
 		}
@@ -159,7 +158,7 @@ prio_destroy(struct Qdisc *sch)
 
 	tcf_block_put(q->block);
 	for (prio = 0; prio < q->bands; prio++)
-		qdisc_destroy(q->queues[prio]);
+		qdisc_put(q->queues[prio]);
 }
 
 static int prio_tune(struct Qdisc *sch, struct nlattr *opt)
@@ -188,7 +187,7 @@ static int prio_tune(struct Qdisc *sch, struct nlattr *opt)
 					      TC_H_MAKE(sch->handle, i + 1));
 		if (!queues[i]) {
 			while (i > oldbands)
-				qdisc_destroy(queues[--i]);
+				qdisc_put(queues[--i]);
 			return -ENOMEM;
 		}
 	}
@@ -206,7 +205,7 @@ static int prio_tune(struct Qdisc *sch, struct nlattr *opt)
 
 		qdisc_tree_reduce_backlog(child, child->q.qlen,
 					  child->qstats.backlog);
-		qdisc_destroy(child);
+		qdisc_put(child);
 	}
 
 	for (i = oldbands; i < q->bands; i++) {
@@ -233,7 +232,7 @@ static int prio_init(struct Qdisc *sch, struct nlattr *opt)
 	if (!opt)
 		return -EINVAL;
 
-	err = tcf_block_get(&q->block, &q->filter_list, sch);
+	err = tcf_block_get(&q->block, &q->filter_list);
 	if (err)
 		return err;
 

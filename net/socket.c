@@ -136,7 +136,6 @@ static ssize_t sock_sendpage(struct file *file, struct page *page,
 static ssize_t sock_splice_read(struct file *file, loff_t *ppos,
 				struct pipe_inode_info *pipe, size_t len,
 				unsigned int flags);
-static void sock_show_fdinfo(struct seq_file *m, struct file *f);
 
 /*
  *	Socket files have a set of 'special' operations as well as the generic file ones. These don't appear
@@ -159,9 +158,6 @@ static const struct file_operations socket_file_ops = {
 	.sendpage =	sock_sendpage,
 	.splice_write = generic_splice_sendpage,
 	.splice_read =	sock_splice_read,
-#ifdef CONFIG_PROC_FS
-	.show_fdinfo =	sock_show_fdinfo,
-#endif
 };
 
 /*
@@ -950,14 +946,6 @@ static ssize_t sock_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	res = sock_sendmsg(sock, &msg);
 	*from = msg.msg_iter;
 	return res;
-}
-
-static void sock_show_fdinfo(struct seq_file *m, struct file *f)
-{
-	struct socket *sock = f->private_data;
-
-	if (sock->ops->show_fdinfo)
-		sock->ops->show_fdinfo(m, sock);
 }
 
 /*
@@ -1888,9 +1876,11 @@ SYSCALL_DEFINE4(recv, int, fd, void __user *, ubuf, size_t, size,
  *	to pass the user mode parameter for the protocols to sort out.
  */
 
-SYSCALL_DEFINE5(setsockopt, int, fd, int, level, int, optname,
-		char __user *, optval, int, optlen)
+static int __sys_setsockopt(int fd, int level, int optname,
+			    char __user *optval, int optlen)
 {
+	mm_segment_t oldfs = get_fs();
+	char *kernel_optval = NULL;
 	int err, fput_needed;
 	struct socket *sock;
 
@@ -1903,6 +1893,22 @@ SYSCALL_DEFINE5(setsockopt, int, fd, int, level, int, optname,
 		if (err)
 			goto out_put;
 
+		err = BPF_CGROUP_RUN_PROG_SETSOCKOPT(sock->sk, &level,
+						     &optname, optval, &optlen,
+						     &kernel_optval);
+
+		if (err < 0) {
+			goto out_put;
+		} else if (err > 0) {
+			err = 0;
+			goto out_put;
+		}
+
+		if (kernel_optval) {
+			set_fs(KERNEL_DS);
+			optval = (char __user __force *)kernel_optval;
+		}
+
 		if (level == SOL_SOCKET)
 			err =
 			    sock_setsockopt(sock, level, optname, optval,
@@ -1911,10 +1917,21 @@ SYSCALL_DEFINE5(setsockopt, int, fd, int, level, int, optname,
 			err =
 			    sock->ops->setsockopt(sock, level, optname, optval,
 						  optlen);
+
+		if (kernel_optval) {
+			set_fs(oldfs);
+			kfree(kernel_optval);
+		}
 out_put:
 		fput_light(sock->file, fput_needed);
 	}
 	return err;
+}
+
+SYSCALL_DEFINE5(setsockopt, int, fd, int, level, int, optname,
+		char __user *, optval, int, optlen)
+{
+	return __sys_setsockopt(fd, level, optname, optval, optlen);
 }
 
 /*
@@ -1922,17 +1939,20 @@ out_put:
  *	to pass a user mode parameter for the protocols to sort out.
  */
 
-SYSCALL_DEFINE5(getsockopt, int, fd, int, level, int, optname,
-		char __user *, optval, int __user *, optlen)
+static int __sys_getsockopt(int fd, int level, int optname,
+			    char __user *optval, int __user *optlen)
 {
 	int err, fput_needed;
 	struct socket *sock;
+	int max_optlen;
 
 	sock = sockfd_lookup_light(fd, &err, &fput_needed);
 	if (sock != NULL) {
 		err = security_socket_getsockopt(sock, level, optname);
 		if (err)
 			goto out_put;
+
+		max_optlen = BPF_CGROUP_GETSOCKOPT_MAX_OPTLEN(optlen);
 
 		if (level == SOL_SOCKET)
 			err =
@@ -1942,10 +1962,20 @@ SYSCALL_DEFINE5(getsockopt, int, fd, int, level, int, optname,
 			err =
 			    sock->ops->getsockopt(sock, level, optname, optval,
 						  optlen);
+
+		err = BPF_CGROUP_RUN_PROG_GETSOCKOPT(sock->sk, level, optname,
+						     optval, optlen,
+						     max_optlen, err);
 out_put:
 		fput_light(sock->file, fput_needed);
 	}
 	return err;
+}
+
+SYSCALL_DEFINE5(getsockopt, int, fd, int, level, int, optname,
+		char __user *, optval, int __user *, optlen)
+{
+	return __sys_getsockopt(fd, level, optname, optval, optlen);
 }
 
 /*
@@ -2565,11 +2595,11 @@ SYSCALL_DEFINE2(socketcall, int, call, unsigned long __user *, args)
 		err = sys_shutdown(a0, a1);
 		break;
 	case SYS_SETSOCKOPT:
-		err = sys_setsockopt(a0, a1, a[2], (char __user *)a[3], a[4]);
+		err = __sys_setsockopt(a0, a1, a[2], (char __user *)a[3], a[4]);
 		break;
 	case SYS_GETSOCKOPT:
 		err =
-		    sys_getsockopt(a0, a1, a[2], (char __user *)a[3],
+		    __sys_getsockopt(a0, a1, a[2], (char __user *)a[3],
 				   (int __user *)a[4]);
 		break;
 	case SYS_SENDMSG:
@@ -2657,6 +2687,11 @@ void sock_unregister(int family)
 	pr_info("NET: Unregistered protocol family %d\n", family);
 }
 EXPORT_SYMBOL(sock_unregister);
+
+bool sock_is_registered(int family)
+{
+	return family < NPROTO && rcu_access_pointer(net_families[family]);
+}
 
 static int __init sock_init(void)
 {

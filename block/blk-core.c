@@ -56,6 +56,10 @@
 #include <linux/iomonitor/iomonitor.h>
 #endif /*OPLUS_FEATURE_IOMONITOR*/
 
+#ifdef OPLUS_FEATURE_UIFIRST
+#include <linux/uifirst/uifirst_sched_common.h>
+#endif /*OPLUS_FEATURE_UIFIRST*/
+
 #ifdef CONFIG_DEBUG_FS
 struct dentry *blk_debugfs_root;
 #endif
@@ -375,6 +379,34 @@ void blk_sync_queue(struct request_queue *q)
 }
 EXPORT_SYMBOL(blk_sync_queue);
 
+void blk_set_preempt_only(struct request_queue *q, bool preempt_only)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(q->queue_lock, flags);
+	if (preempt_only)
+		queue_flag_set(QUEUE_FLAG_PREEMPT_ONLY, q);
+	else
+		queue_flag_clear(QUEUE_FLAG_PREEMPT_ONLY, q);
+	spin_unlock_irqrestore(q->queue_lock, flags);
+
+	/*
+	 * The synchronize_rcu() implicied in blk_mq_freeze_queue()
+	 * or the explicit one will make sure the above write on
+	 * PREEMPT_ONLY is observed in blk_queue_enter() before
+	 * running blk_mq_unfreeze_queue().
+	 *
+	 * blk_mq_freeze_queue() also drains up any request in queue,
+	 * so blk_queue_enter() will see the above updated value of
+	 * PREEMPT flag before any new allocation.
+	 */
+	if (!blk_mq_freeze_queue(q))
+		synchronize_rcu();
+
+	blk_mq_unfreeze_queue(q);
+}
+EXPORT_SYMBOL(blk_set_preempt_only);
+
 /**
  * __blk_run_queue_uncond - run a queue whether or not it has been stopped
  * @q:	The queue to run
@@ -646,6 +678,9 @@ void blk_set_queue_dying(struct request_queue *q)
 		}
 		spin_unlock_irq(q->queue_lock);
 	}
+
+	/* Make blk_queue_enter() reexamine the DYING flag. */
+	wake_up_all(&q->mq_freeze_wq);
 }
 EXPORT_SYMBOL_GPL(blk_set_queue_dying);
 
@@ -837,14 +872,22 @@ struct request_queue *blk_alloc_queue(gfp_t gfp_mask)
 }
 EXPORT_SYMBOL(blk_alloc_queue);
 
-int blk_queue_enter(struct request_queue *q, bool nowait)
+int blk_queue_enter(struct request_queue *q, unsigned int op)
 {
 	while (true) {
 
-		if (percpu_ref_tryget_live(&q->q_usage_counter))
-			return 0;
+		rcu_read_lock_sched();
+		if (__percpu_ref_tryget_live(&q->q_usage_counter)) {
+			if (likely((op & REQ_PREEMPT) ||
+					!blk_queue_preempt_only(q))) {
+				rcu_read_unlock_sched();
+				return 0;
+			} else
+				percpu_ref_put(&q->q_usage_counter);
+		}
+		rcu_read_unlock_sched();
 
-		if (nowait)
+		if (op & REQ_NOWAIT)
 			return -EBUSY;
 
 		/*
@@ -857,8 +900,10 @@ int blk_queue_enter(struct request_queue *q, bool nowait)
 		smp_rmb();
 
 		wait_event(q->mq_freeze_wq,
-			   !atomic_read(&q->mq_freeze_depth) ||
-			   blk_queue_dying(q));
+			   (!atomic_read(&q->mq_freeze_depth) &&
+			   ((op & REQ_PREEMPT) ||
+			    !blk_queue_preempt_only(q))) ||
+			    blk_queue_dying(q));
 		if (blk_queue_dying(q))
 			return -ENODEV;
 	}
@@ -1482,16 +1527,22 @@ static struct request *blk_old_get_request(struct request_queue *q,
 					   unsigned int op, gfp_t gfp_mask)
 {
 	struct request *rq;
+	int ret = 0;
 
 	WARN_ON_ONCE(q->mq_ops);
 
 	/* create ioc upfront */
 	create_io_context(gfp_mask, q->node);
 
+	ret = blk_queue_enter(q, (gfp_mask & __GFP_DIRECT_RECLAIM) ? op :
+			      op | REQ_NOWAIT);
+	if (ret)
+		return ERR_PTR(ret);
 	spin_lock_irq(q->queue_lock);
 	rq = get_request(q, op, NULL, gfp_mask);
 	if (IS_ERR(rq)) {
 		spin_unlock_irq(q->queue_lock);
+		blk_queue_exit(q);
 		return rq;
 	}
 
@@ -1511,6 +1562,7 @@ struct request *blk_get_request(struct request_queue *q, unsigned int op,
 		req = blk_mq_alloc_request(q, op,
 			(gfp_mask & __GFP_DIRECT_RECLAIM) ?
 				0 : BLK_MQ_REQ_NOWAIT);
+
 		if (!IS_ERR(req) && q->mq_ops->initialize_rq_fn)
 			q->mq_ops->initialize_rq_fn(req);
 	} else {
@@ -1663,6 +1715,7 @@ void __blk_put_request(struct request_queue *q, struct request *req)
 		blk_free_request(rl, req);
 		freed_request(rl, sync, rq_flags);
 		blk_put_rl(rl);
+		blk_queue_exit(q);
 	}
 }
 EXPORT_SYMBOL_GPL(__blk_put_request);
@@ -1861,6 +1914,17 @@ void blk_init_request_from_bio(struct request *req, struct bio *bio)
 
 	if (bio->bi_opf & REQ_RAHEAD)
 		req->cmd_flags |= REQ_FAILFAST_MASK;
+#if defined(OPLUS_FEATURE_FG_IO_OPT) && defined(CONFIG_OPPO_FG_IO_OPT)
+/*Huacai.Zhou@Tech.Kernel.MM, 2020-03-23,add foreground io opt*/
+	if (bio->bi_opf & REQ_FG)
+		req->cmd_flags |= REQ_FG;
+#endif /*OPLUS_FEATURE_FG_IO_OPT*/
+
+#ifdef OPLUS_FEATURE_UIFIRST
+	if (bio->bi_opf & REQ_UX)
+		req->cmd_flags |= REQ_UX;
+#endif /*OPLUS_FEATURE_UIFIRST*/
+
 	req->__sector = bio->bi_iter.bi_sector;
 	if (ioprio_valid(bio_prio(bio)))
 		req->ioprio = bio_prio(bio);
@@ -1943,8 +2007,10 @@ get_rq:
 	 * Grab a free request. This is might sleep but can not fail.
 	 * Returns with the queue unlocked.
 	 */
+	blk_queue_enter_live(q);
 	req = get_request(q, bio->bi_opf, bio, GFP_NOIO);
 	if (IS_ERR(req)) {
+		blk_queue_exit(q);
 		__wbt_done(q->rq_wb, wb_acct);
 		if (PTR_ERR(req) == -ENOMEM)
 			bio->bi_status = BLK_STS_RESOURCE;
@@ -2256,7 +2322,7 @@ blk_qc_t generic_make_request(struct bio *bio)
 		flags = BLK_MQ_REQ_NOWAIT;
 	if (bio_flagged(bio, BIO_QUEUE_ENTERED))
 		blk_queue_enter_live(q);
-	else if (blk_queue_enter(q, flags) < 0) {
+	else if (blk_queue_enter(q, bio->bi_opf) < 0) {
 		if (!blk_queue_dying(q) && (bio->bi_opf & REQ_NOWAIT))
 			bio_wouldblock_error(bio);
 		else
@@ -2309,7 +2375,7 @@ blk_qc_t generic_make_request(struct bio *bio)
 			flags = 0;
 			if (bio->bi_opf & REQ_NOWAIT)
 				flags = BLK_MQ_REQ_NOWAIT;
-			if (blk_queue_enter(q, flags) < 0)
+			if (blk_queue_enter(q, bio->bi_opf) < 0)
 				enter_succeeded = false;
 		}
 
@@ -2416,6 +2482,17 @@ blk_qc_t submit_bio(struct bio *bio)
 	 */
 	if (workingset_read)
 		psi_memstall_enter(&pflags);
+#if defined(OPLUS_FEATURE_FG_IO_OPT) && defined(CONFIG_OPPO_FG_IO_OPT)
+/*Huacai.Zhou@Tech.Kernel.MM, 2020-03-23,add foreground io opt*/
+	if (high_prio_for_task(current))
+		bio->bi_opf |= REQ_FG;
+#endif /*OPLUS_FEATURE_FG_IO_OPT*/
+
+#ifdef OPLUS_FEATURE_UIFIRST
+	if (test_task_ux(current))
+		bio->bi_opf |= REQ_UX;
+#endif /*OPLUS_FEATURE_UIFIRST*/
+
 	ret = generic_make_request(bio);
 
 	if (workingset_read)
@@ -2795,6 +2872,13 @@ static void blk_dequeue_request(struct request *rq)
 	if (blk_account_rq(rq)) {
 		q->in_flight[rq_is_sync(rq)]++;
 		set_io_start_time_ns(rq);
+#ifdef OPLUS_FEATURE_HEALTHINFO
+// jiheng.xie@PSW.Tech.BSP.Performance, 2019/03/11
+// Add for ioqueue
+#ifdef CONFIG_OPPO_HEALTHINFO
+		ohm_ioqueue_add_inflight(q, rq);
+#endif
+#endif /* OPLUS_FEATURE_HEALTHINFO */
 	}
 }
 

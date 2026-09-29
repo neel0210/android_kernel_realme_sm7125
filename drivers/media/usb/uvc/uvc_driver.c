@@ -531,7 +531,7 @@ static int uvc_parse_format(struct uvc_device *dev,
 	/* Parse the frame descriptors. Only uncompressed, MJPEG and frame
 	 * based formats have frame descriptors.
 	 */
-	while (buflen > 2 && buffer[1] == USB_DT_CS_INTERFACE &&
+	while (ftype && buflen > 2 && buffer[1] == USB_DT_CS_INTERFACE &&
 	       buffer[2] == ftype) {
 		frame = &format->frame[format->nframes];
 		if (ftype != UVC_VS_FRAME_FRAME_BASED)
@@ -821,16 +821,26 @@ static int uvc_parse_streaming(struct uvc_device *dev,
 		goto error;
 	}
 
-	size = nformats * sizeof *format + nframes * sizeof *frame
-	     + nintervals * sizeof *interval;
+	/*
+	 * Allocate memory for the formats, the frames and the intervals,
+	 * plus any required padding to guarantee that everything has the
+	 * correct alignment.
+	 */
+	size = nformats * sizeof(*format);
+	size = ALIGN(size, __alignof__(*frame)) + nframes * sizeof(*frame);
+	size = ALIGN(size, __alignof__(*interval))
+	     + nintervals * sizeof(*interval);
+
 	format = kzalloc(size, GFP_KERNEL);
-	if (format == NULL) {
+	if (!format) {
 		ret = -ENOMEM;
 		goto error;
 	}
 
-	frame = (struct uvc_frame *)&format[nformats];
-	interval = (__u32 *)&frame[nframes];
+	frame = (void *)format + nformats * sizeof(*format);
+	frame = PTR_ALIGN(frame, __alignof__(*frame));
+	interval = (void *)frame + nframes * sizeof(*frame);
+	interval = PTR_ALIGN(interval, __alignof__(*interval));
 
 	streaming->format = format;
 	streaming->nformats = nformats;
@@ -1893,9 +1903,8 @@ static void uvc_unregister_video(struct uvc_device *dev)
 			continue;
 
 		video_unregister_device(&stream->vdev);
-#ifdef CONFIG_DEBUG_FS
+
 		uvc_debugfs_cleanup_stream(stream);
-#endif
 	}
 }
 
@@ -1919,9 +1928,9 @@ static int uvc_register_video(struct uvc_device *dev,
 			"(%d).\n", ret);
 		return ret;
 	}
-#ifdef CONFIG_DEBUG_FS
+
 	uvc_debugfs_init_stream(stream);
-#endif
+
 	/* Register the device with V4L. */
 
 	/* We already hold a reference to dev->udev. The video device will be
@@ -2777,14 +2786,12 @@ struct uvc_driver uvc_driver = {
 static int __init uvc_init(void)
 {
 	int ret;
-#ifdef CONFIG_DEBUG_FS
+
 	uvc_debugfs_init();
-#endif
+
 	ret = usb_register(&uvc_driver.driver);
 	if (ret < 0) {
-#ifdef CONFIG_DEBUG_FS
 		uvc_debugfs_cleanup();
-#endif
 		return ret;
 	}
 
@@ -2795,9 +2802,7 @@ static int __init uvc_init(void)
 static void __exit uvc_cleanup(void)
 {
 	usb_deregister(&uvc_driver.driver);
-#ifdef CONFIG_DEBUG_FS
 	uvc_debugfs_cleanup();
-#endif
 }
 
 module_init(uvc_init);

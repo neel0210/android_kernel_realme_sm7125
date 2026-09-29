@@ -298,8 +298,8 @@ int anon_vma_clone(struct vm_area_struct *dst, struct vm_area_struct *src)
 
  enomem_failure:
 	/*
-	 * dst->anon_vma is dropped here otherwise its degree can be incorrectly
-	 * decremented in unlink_anon_vmas().
+	 * Drop dst->anon_vma here to avoid incorrectly decrementing its active
+	 * VMA count in unlink_anon_vmas().
 	 * We can safely do this because callers of anon_vma_clone() don't care
 	 * about dst->anon_vma if anon_vma_clone() failed.
 	 */
@@ -347,15 +347,15 @@ int anon_vma_clone_oppo(struct vm_area_struct *dst, struct vm_area_struct *src)
 		length++;
 
 		/*
-		 * Reuse existing anon_vma if its degree lower than two,
-		 * that means it has no vma and only one anon_vma child.
+		 * Reuse existing anon_vma if it has no vma and only one
+		 * anon_vma child.
 		 *
 		 * Do not chose parent anon_vma, otherwise first child
 		 * will always reuse it. Root anon_vma is never reused:
 		 * it has self-parent reference and at least one child.
 		 */
-		if (!dst->anon_vma &&
-                    anon_vma->num_children < 2 &&
+		if (!dst->anon_vma && anon_vma != src->anon_vma &&
+		    anon_vma->num_children < 2 &&
 		    anon_vma->num_active_vmas == 0)
 			dst->anon_vma = anon_vma;
 	}
@@ -366,8 +366,8 @@ int anon_vma_clone_oppo(struct vm_area_struct *dst, struct vm_area_struct *src)
 
  enomem_failure:
 	/*
-	 * dst->anon_vma is dropped here otherwise its degree can be incorrectly
-	 * decremented in unlink_anon_vmas().
+	 * Drop dst->anon_vma here to avoid incorrectly decrementing its active
+	 * VMA count in unlink_anon_vmas().
 	 * We can safely do this because callers of anon_vma_clone() don't care
 	 * about dst->anon_vma if anon_vma_clone() failed.
 	 */
@@ -1213,7 +1213,7 @@ void do_page_add_anon_rmap(struct page *page,
 }
 
 /**
- * __page_add_new_anon_rmap - add pte mapping to a new anonymous page
+ * page_add_new_anon_rmap - add pte mapping to a new anonymous page
  * @page:	the page to add the mapping to
  * @vma:	the vm area in which the mapping is added
  * @address:	the user virtual address mapped
@@ -1223,11 +1223,12 @@ void do_page_add_anon_rmap(struct page *page,
  * This means the inc-and-test can be bypassed.
  * Page does not have to be locked.
  */
-void __page_add_new_anon_rmap(struct page *page,
+void page_add_new_anon_rmap(struct page *page,
 	struct vm_area_struct *vma, unsigned long address, bool compound)
 {
 	int nr = compound ? hpage_nr_pages(page) : 1;
 
+	VM_BUG_ON_VMA(address < vma->vm_start || address >= vma->vm_end, vma);
 	__SetPageSwapBacked(page);
 	if (compound) {
 		VM_BUG_ON_PAGE(!PageTransHuge(page), page);

@@ -1844,9 +1844,10 @@ static int __init msm_pil_init(void)
 	g_md_toc = qcom_smem_get(QCOM_SMEM_HOST_ANY, SBL_MINIDUMP_SMEM_ID,
 				 &size);
 	pr_debug("Minidump: g_md_toc is %pa\n", &g_md_toc);
-	if (PTR_ERR(g_md_toc) == -EPROBE_DEFER) {
-		pr_err("SMEM is not initialized.\n");
-		return -EPROBE_DEFER;
+	if (IS_ERR(g_md_toc)) {
+		pr_warn("Minidump: SMEM table unavailable: %ld\n",
+			PTR_ERR(g_md_toc));
+		g_md_toc = NULL;
 	}
 
 	minidump_debug = map_prop(MINIDUMP_DEBUG_PROP);
@@ -1858,7 +1859,7 @@ static int __init msm_pil_init(void)
 
 	pil_ipc_log = ipc_log_context_create(2, "PIL-IPC", 0);
 	if (!pil_ipc_log)
-		pr_debug("Failed to setup PIL ipc logging\n");
+		pr_warn("Failed to setup PIL ipc logging\n");
 out:
 	return register_pm_notifier(&pil_pm_notifier);
 }

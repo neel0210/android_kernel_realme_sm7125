@@ -233,11 +233,9 @@ struct qcedev_stat {
 };
 
 static struct qcedev_stat _qcedev_stat;
-#ifdef CONFIG_DEBUG_FS
 static struct dentry *_debug_dent;
 static char _debug_read_buf[DEBUG_MAX_RW_BUF];
 static int _debug_qcedev;
-#endif
 
 static struct qcedev_control *qcedev_minor_to_control(unsigned int n)
 {
@@ -1917,7 +1915,9 @@ static inline long qcedev_ioctl(struct file *file,
 				goto exit_free_qcedev_areq;
 			}
 
-			if (map_buf.num_fds > QCEDEV_MAX_BUFFERS) {
+			if (map_buf.num_fds > ARRAY_SIZE(map_buf.fd)) {
+				pr_err("%s: err: num_fds = %d exceeds max value\n",
+				__func__, map_buf.num_fds);
 				err = -EINVAL;
 				goto exit_free_qcedev_areq;
 			}
@@ -1955,6 +1955,12 @@ static inline long qcedev_ioctl(struct file *file,
 			if (copy_from_user(&unmap_buf,
 				(void __user *)arg, sizeof(unmap_buf))) {
 				err = -EFAULT;
+				goto exit_free_qcedev_areq;
+			}
+			if (unmap_buf.num_fds > ARRAY_SIZE(unmap_buf.fd)) {
+				pr_err("%s: err: num_fds = %d exceeds max value\n",
+				__func__, unmap_buf.num_fds);
+				err = -EINVAL;
 				goto exit_free_qcedev_areq;
 			}
 
@@ -2156,8 +2162,10 @@ static int qcedev_remove(struct platform_device *pdev)
 	if (msm_bus_scale_client_update_request(podev->bus_scale_handle, 1))
 		pr_err("%s Unable to set high bandwidth\n", __func__);
 
+	qcedev_ce_high_bw_req(podev, true);
 	if (podev->qce)
 		qce_close(podev->qce);
+	qcedev_ce_high_bw_req(podev, false);
 
 	if (msm_bus_scale_client_update_request(podev->bus_scale_handle, 0))
 		pr_err("%s Unable to set low bandwidth\n", __func__);
@@ -2229,11 +2237,9 @@ static struct platform_driver qcedev_plat_driver = {
 		.name = "qce",
 		.owner = THIS_MODULE,
 		.of_match_table = qcedev_match,
-		.probe_type = PROBE_FORCE_SYNCHRONOUS,
 	},
 };
 
-#ifdef CONFIG_DEBUG_FS
 static int _disp_stats(int id)
 {
 	struct qcedev_stat *pstat;
@@ -2323,21 +2329,16 @@ err:
 	debugfs_remove_recursive(_debug_dent);
 	return rc;
 }
-#endif
 
 static int qcedev_init(void)
 {
-#ifdef CONFIG_DEBUG_FS
 	_qcedev_debug_init();
-#endif
 	return platform_driver_register(&qcedev_plat_driver);
 }
 
 static void qcedev_exit(void)
 {
-#ifdef CONFIG_DEBUG_FS
 	debugfs_remove_recursive(_debug_dent);
-#endif
 	platform_driver_unregister(&qcedev_plat_driver);
 }
 

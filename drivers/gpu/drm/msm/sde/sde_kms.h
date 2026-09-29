@@ -47,23 +47,32 @@
  * @fmt: Pointer to format string
  */
 #define SDE_DEBUG(fmt, ...)                                                \
-	no_printk(fmt, ##__VA_ARGS__)
+	do {                                                               \
+		no_printk(fmt, ##__VA_ARGS__);                             \
+	} while (0)
 
 /**
  * SDE_INFO - macro for kms/plane/crtc/encoder/connector logs
  * @fmt: Pointer to format string
  */
 #define SDE_INFO(fmt, ...)                                                \
-	no_printk(fmt, ##__VA_ARGS__)
+	do {                                                               \
+		if (unlikely(drm_debug & DRM_UT_KMS))                      \
+			DRM_INFO(fmt, ##__VA_ARGS__); \
+		else                                                       \
+			pr_info(fmt, ##__VA_ARGS__);                      \
+	} while (0)
 
 /**
  * SDE_DEBUG_DRIVER - macro for hardware driver logging
  * @fmt: Pointer to format string
  */
 #define SDE_DEBUG_DRIVER(fmt, ...)                                         \
-	no_printk(fmt, ##__VA_ARGS__)
+	do {                                                               \
+		no_printk(fmt, ##__VA_ARGS__);                             \
+	} while (0)
 
-#define SDE_ERROR(fmt, ...) pr_debug("[sde error]" fmt, ##__VA_ARGS__)
+#define SDE_ERROR(fmt, ...) pr_err("[sde error]" fmt, ##__VA_ARGS__)
 
 #define POPULATE_RECT(rect, a, b, c, d, Q16_flag) \
 	do {						\
@@ -260,8 +269,6 @@ struct sde_kms {
 
 	bool first_kickoff;
 	bool qdss_enabled;
-
-	struct pm_qos_request pm_qos_irq_req;
 };
 
 struct vsync_info {
@@ -667,14 +674,12 @@ int sde_kms_handle_recovery(struct drm_encoder *encoder);
  */
 void sde_kms_release_splash_resource(struct sde_kms *sde_kms,
 		struct drm_crtc *crtc);
-
-/*
- * sde_kms_update_pm_qos_irq_request - Update Qos vote for CPU receiving
- *					display IRQ
- * @sde_kms : pointer to sde_kms structure
- * @enable : indicates request to be enabled or disabled
- * @skip_lock : indicates if lock needs to be acquired
+/**
+ * sde_kms_trigger_early_wakeup - trigger early wake up
+ * @sde_kms: pointer to sde_kms structure
+ * @crtc: pointer to drm_crtc structure
  */
-void sde_kms_update_pm_qos_irq_request(struct sde_kms *sde_kms,
-	 bool enable, bool skip_lock);
+void sde_kms_trigger_early_wakeup(struct sde_kms *sde_kms,
+		struct drm_crtc *crtc);
+
 #endif /* __sde_kms_H__ */

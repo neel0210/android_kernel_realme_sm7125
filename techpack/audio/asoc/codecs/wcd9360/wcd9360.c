@@ -1707,7 +1707,7 @@ static int pahu_codec_enable_spkr_anc(struct snd_soc_dapm_widget *w,
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
 		ret = pahu_codec_enable_anc(w, kcontrol, event);
-		queue_delayed_work(system_power_efficient_wq, &pahu->spk_anc_dwork.dwork,
+		schedule_delayed_work(&pahu->spk_anc_dwork.dwork,
 				      msecs_to_jiffies(spk_anc_en_delay));
 		break;
 	case SND_SOC_DAPM_POST_PMD:
@@ -3075,12 +3075,11 @@ static int pahu_codec_enable_dec(struct snd_soc_dapm_widget *w,
 			snd_soc_update_bits(codec, hpf_gate_reg, 0x02, 0x00);
 		}
 		/* schedule work queue to Remove Mute */
-		queue_delayed_work(system_power_efficient_wq, 
-					&pahu->tx_mute_dwork[decimator].dwork,
-					msecs_to_jiffies(tx_unmute_delay));
+		schedule_delayed_work(&pahu->tx_mute_dwork[decimator].dwork,
+				      msecs_to_jiffies(tx_unmute_delay));
 		if (pahu->tx_hpf_work[decimator].hpf_cut_off_freq !=
 							CF_MIN_3DB_150HZ)
-			queue_delayed_work(system_power_efficient_wq, 
+			schedule_delayed_work(
 					&pahu->tx_hpf_work[decimator].dwork,
 					msecs_to_jiffies(300));
 		/* apply gain after decimator is enabled */
@@ -4221,53 +4220,53 @@ static const struct snd_kcontrol_new pahu_snd_controls[] = {
 	SOC_SINGLE_TLV("ADC3 Volume", WCD9360_ANA_AMIC3, 0, 20, 0, analog_gain),
 	SOC_SINGLE_TLV("ADC4 Volume", WCD9360_ANA_AMIC4, 0, 20, 0, analog_gain),
 
-	SOC_SINGLE_SX_TLV("RX0 Digital Volume", WCD9360_CDC_RX0_RX_VOL_CTL,
-		0, -84, 40, digital_gain), /* -84dB min - 40dB max */
-	SOC_SINGLE_SX_TLV("RX7 Digital Volume", WCD9360_CDC_RX7_RX_VOL_CTL,
-		0, -84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("RX8 Digital Volume", WCD9360_CDC_RX8_RX_VOL_CTL,
-		0, -84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("RX9 Digital Volume", WCD9360_CDC_RX9_RX_VOL_CTL,
-		0, -84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("RX0 Mix Digital Volume",
-		WCD9360_CDC_RX0_RX_VOL_MIX_CTL, 0, -84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("RX7 Mix Digital Volume",
-		WCD9360_CDC_RX7_RX_VOL_MIX_CTL, 0, -84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("RX8 Mix Digital Volume",
-		WCD9360_CDC_RX8_RX_VOL_MIX_CTL, 0, -84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("RX9 Mix Digital Volume",
-		WCD9360_CDC_RX9_RX_VOL_MIX_CTL, 0, -84, 40, digital_gain),
+	SOC_SINGLE_S8_TLV("RX0 Digital Volume", WCD9360_CDC_RX0_RX_VOL_CTL,
+		-84, 40, digital_gain), /* -84dB min - 40dB max */
+	SOC_SINGLE_S8_TLV("RX7 Digital Volume", WCD9360_CDC_RX7_RX_VOL_CTL,
+		-84, 40, digital_gain),
+	SOC_SINGLE_S8_TLV("RX8 Digital Volume", WCD9360_CDC_RX8_RX_VOL_CTL,
+		-84, 40, digital_gain),
+	SOC_SINGLE_S8_TLV("RX9 Digital Volume", WCD9360_CDC_RX9_RX_VOL_CTL,
+		-84, 40, digital_gain),
+	SOC_SINGLE_S8_TLV("RX0 Mix Digital Volume",
+		WCD9360_CDC_RX0_RX_VOL_MIX_CTL, -84, 40, digital_gain),
+	SOC_SINGLE_S8_TLV("RX7 Mix Digital Volume",
+		WCD9360_CDC_RX7_RX_VOL_MIX_CTL, -84, 40, digital_gain),
+	SOC_SINGLE_S8_TLV("RX8 Mix Digital Volume",
+		WCD9360_CDC_RX8_RX_VOL_MIX_CTL, -84, 40, digital_gain),
+	SOC_SINGLE_S8_TLV("RX9 Mix Digital Volume",
+		WCD9360_CDC_RX9_RX_VOL_MIX_CTL, -84, 40, digital_gain),
 
-	SOC_SINGLE_SX_TLV("DEC0 Volume", WCD9360_CDC_TX0_TX_VOL_CTL, 0,
+	SOC_SINGLE_S8_TLV("DEC0 Volume", WCD9360_CDC_TX0_TX_VOL_CTL,
 		-84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("DEC1 Volume", WCD9360_CDC_TX1_TX_VOL_CTL, 0,
+	SOC_SINGLE_S8_TLV("DEC1 Volume", WCD9360_CDC_TX1_TX_VOL_CTL,
 		-84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("DEC2 Volume", WCD9360_CDC_TX2_TX_VOL_CTL, 0,
+	SOC_SINGLE_S8_TLV("DEC2 Volume", WCD9360_CDC_TX2_TX_VOL_CTL,
 		-84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("DEC3 Volume", WCD9360_CDC_TX3_TX_VOL_CTL, 0,
+	SOC_SINGLE_S8_TLV("DEC3 Volume", WCD9360_CDC_TX3_TX_VOL_CTL,
 		-84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("DEC4 Volume", WCD9360_CDC_TX4_TX_VOL_CTL, 0,
+	SOC_SINGLE_S8_TLV("DEC4 Volume", WCD9360_CDC_TX4_TX_VOL_CTL,
 		-84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("DEC5 Volume", WCD9360_CDC_TX5_TX_VOL_CTL, 0,
+	SOC_SINGLE_S8_TLV("DEC5 Volume", WCD9360_CDC_TX5_TX_VOL_CTL,
 		-84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("DEC6 Volume", WCD9360_CDC_TX6_TX_VOL_CTL, 0,
+	SOC_SINGLE_S8_TLV("DEC6 Volume", WCD9360_CDC_TX6_TX_VOL_CTL,
 		-84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("DEC7 Volume", WCD9360_CDC_TX7_TX_VOL_CTL, 0,
+	SOC_SINGLE_S8_TLV("DEC7 Volume", WCD9360_CDC_TX7_TX_VOL_CTL,
 		-84, 40, digital_gain),
-	SOC_SINGLE_SX_TLV("DEC8 Volume", WCD9360_CDC_TX8_TX_VOL_CTL, 0,
+	SOC_SINGLE_S8_TLV("DEC8 Volume", WCD9360_CDC_TX8_TX_VOL_CTL,
 		-84, 40, digital_gain),
 
-	SOC_SINGLE_SX_TLV("IIR0 INP0 Volume",
-		WCD9360_CDC_SIDETONE_IIR0_IIR_GAIN_B1_CTL, 0, -84, 40,
+	SOC_SINGLE_S8_TLV("IIR0 INP0 Volume",
+		WCD9360_CDC_SIDETONE_IIR0_IIR_GAIN_B1_CTL, -84, 40,
 		digital_gain),
-	SOC_SINGLE_SX_TLV("IIR0 INP1 Volume",
-		WCD9360_CDC_SIDETONE_IIR0_IIR_GAIN_B2_CTL, 0, -84, 40,
+	SOC_SINGLE_S8_TLV("IIR0 INP1 Volume",
+		WCD9360_CDC_SIDETONE_IIR0_IIR_GAIN_B2_CTL, -84, 40,
 		digital_gain),
-	SOC_SINGLE_SX_TLV("IIR0 INP2 Volume",
-		WCD9360_CDC_SIDETONE_IIR0_IIR_GAIN_B3_CTL, 0, -84, 40,
+	SOC_SINGLE_S8_TLV("IIR0 INP2 Volume",
+		WCD9360_CDC_SIDETONE_IIR0_IIR_GAIN_B3_CTL, -84, 40,
 		digital_gain),
-	SOC_SINGLE_SX_TLV("IIR0 INP3 Volume",
-		WCD9360_CDC_SIDETONE_IIR0_IIR_GAIN_B4_CTL, 0, -84, 40,
+	SOC_SINGLE_S8_TLV("IIR0 INP3 Volume",
+		WCD9360_CDC_SIDETONE_IIR0_IIR_GAIN_B4_CTL, -84, 40,
 		digital_gain),
 
 	SOC_SINGLE_EXT("ANC Slot", SND_SOC_NOPM, 0, 100, 0, pahu_get_anc_slot,
@@ -6363,8 +6362,7 @@ static int pahu_dig_core_power_collapse(struct pahu_priv *pahu,
 
 	if (req_state == POWER_COLLAPSE) {
 		if (pahu->power_active_ref == 0) {
-			queue_delayed_work(system_power_efficient_wq, 
-			&pahu->power_gate_work,
+			schedule_delayed_work(&pahu->power_gate_work,
 			msecs_to_jiffies(dig_core_collapse_timer * 1000));
 		}
 	} else if (req_state == POWER_RESUME) {

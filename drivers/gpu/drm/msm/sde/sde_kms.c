@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  * Copyright (c) 2014-2021, The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
@@ -375,9 +376,32 @@ static void _sde_debugfs_destroy(struct sde_kms *sde_kms)
 static int sde_kms_enable_vblank(struct msm_kms *kms, struct drm_crtc *crtc)
 {
 	int ret = 0;
+	struct sde_kms *sde_kms;
+	struct msm_drm_private *priv;
+	struct sde_crtc *sde_crtc;
+	struct drm_encoder *drm_enc;
+
+	sde_kms = to_sde_kms(kms);
+	priv = sde_kms->dev->dev_private;
+	sde_crtc = to_sde_crtc(crtc);
 
 	SDE_ATRACE_BEGIN("sde_kms_enable_vblank");
+
+	if (sde_crtc->vblank_requested == false) {
+		SDE_ATRACE_BEGIN("sde_encoder_trigger_early_wakeup");
+		drm_for_each_encoder(drm_enc, crtc->dev)
+			sde_encoder_trigger_early_wakeup(drm_enc);
+
+		if (sde_kms->first_kickoff) {
+			sde_power_scale_reg_bus(&priv->phandle,
+					sde_kms->core_client,
+					VOTE_INDEX_HIGH, false);
+		}
+		SDE_ATRACE_END("sde_encoder_trigger_early_wakeup");
+	}
+
 	ret = sde_crtc_vblank(crtc, true);
+
 	SDE_ATRACE_END("sde_kms_enable_vblank");
 
 	return ret;
@@ -1106,11 +1130,12 @@ void sde_kms_release_splash_resource(struct sde_kms *sde_kms,
 	/* remove the votes if all displays are done with splash */
 	if (!sde_kms->splash_data.num_splash_displays) {
 		for (i = 0; i < SDE_POWER_HANDLE_DBUS_ID_MAX; i++)
-			sde_power_data_bus_set_quota(&priv->phandle,
-					sde_kms->core_client,
-					SDE_POWER_HANDLE_DATA_BUS_CLIENT_RT, i,
-					SDE_POWER_HANDLE_ENABLE_BUS_AB_QUOTA,
-					SDE_POWER_HANDLE_ENABLE_BUS_IB_QUOTA);
+			if (sde_kms->perf.sde_rsc_available)
+				sde_power_data_bus_set_quota(&priv->phandle,
+						sde_kms->core_client,
+						SDE_POWER_HANDLE_DATA_BUS_CLIENT_RT, i,
+						SDE_POWER_HANDLE_ENABLE_BUS_AB_QUOTA,
+						SDE_POWER_HANDLE_ENABLE_BUS_IB_QUOTA);
 
 		sde_power_resource_enable(&priv->phandle,
 				sde_kms->core_client, false);
@@ -1172,7 +1197,7 @@ static void sde_kms_complete_commit(struct msm_kms *kms,
 
 		rc = c_conn->ops.post_kickoff(connector, &params);
 		if (rc) {
-			pr_debug("Connector Post kickoff failed rc=%d\n",
+			pr_err("Connector Post kickoff failed rc=%d\n",
 					 rc);
 		}
 	}
@@ -3204,40 +3229,6 @@ static void _sde_kms_set_lutdma_vbif_remap(struct sde_kms *sde_kms)
 	sde_vbif_set_qos_remap(sde_kms, &qos_params);
 }
 
-void sde_kms_update_pm_qos_irq_request(struct sde_kms *sde_kms,
-			 bool enable, bool skip_lock)
-{
-	struct msm_drm_private *priv;
-
-	if (!sde_kms->irq_num)
-		return;
-
-	priv = sde_kms->dev->dev_private;
-
-	if (!skip_lock)
-		mutex_lock(&priv->phandle.phandle_lock);
-
-	if (enable) {
-		u32 cpu_irq_latency = sde_kms->catalog->perf.cpu_irq_latency;
-		struct pm_qos_request *req = &sde_kms->pm_qos_irq_req;
-
-		if (pm_qos_request_active(req)) {
-			pm_qos_update_request(req, cpu_irq_latency);
-		} else {
-			req->type = PM_QOS_REQ_AFFINE_IRQ;
-			req->irq = sde_kms->irq_num;
-			pm_qos_add_request(req, PM_QOS_CPU_DMA_LATENCY,
-					   cpu_irq_latency);
-		}
-	} else if (!enable && pm_qos_request_active(&sde_kms->pm_qos_irq_req)) {
-		pm_qos_update_request(&sde_kms->pm_qos_irq_req,
-				PM_QOS_DEFAULT_VALUE);
-	}
-
-	if (!skip_lock)
-		mutex_unlock(&priv->phandle.phandle_lock);
-}
-
 static void sde_kms_handle_power_event(u32 event_type, void *usr)
 {
 	struct sde_kms *sde_kms = usr;
@@ -3256,9 +3247,7 @@ static void sde_kms_handle_power_event(u32 event_type, void *usr)
 		sde_kms_init_shared_hw(sde_kms);
 		_sde_kms_set_lutdma_vbif_remap(sde_kms);
 		sde_kms->first_kickoff = true;
-		sde_kms_update_pm_qos_irq_request(sde_kms, true, true);
 	} else if (event_type == SDE_POWER_EVENT_PRE_DISABLE) {
-		sde_kms_update_pm_qos_irq_request(sde_kms, false, true);
 		sde_irq_update(msm_kms, false);
 		sde_kms->first_kickoff = false;
 	}
@@ -3359,10 +3348,10 @@ static int _sde_kms_get_splash_data(struct sde_splash_data *data)
 
 	data->num_splash_displays = num_displays;
 
-	pr_debug("splash mem num_regions:%d\n", num_regions);
+	pr_info("splash mem num_regions:%d\n", num_regions);
 	if (num_displays > num_regions) {
 		share_splash_mem = true;
-		pr_debug(":%d displays share same splash buf\n", num_displays);
+		pr_info(":%d displays share same splash buf\n", num_displays);
 	}
 
 	for (i = 0; i < num_displays; i++) {
@@ -3392,7 +3381,7 @@ static int _sde_kms_get_splash_data(struct sde_splash_data *data)
 			data->splash_display[i].splash = &data->splash_mem[0];
 		}
 
-		pr_debug("splash mem for disp:%d add:%lx size:%x\n", (i + 1),
+		pr_info("splash mem for disp:%d add:%lx size:%x\n", (i + 1),
 				splash_display->splash->splash_buf_base,
 				splash_display->splash->splash_buf_size);
 	}
@@ -3540,7 +3529,7 @@ static int sde_kms_hw_init(struct msm_kms *kms)
 
 	_sde_kms_core_hw_rev_init(sde_kms);
 
-	pr_debug("sde hardware revision:0x%x\n", sde_kms->core_rev);
+	pr_info("sde hardware revision:0x%x\n", sde_kms->core_rev);
 
 	sde_kms->catalog = sde_hw_catalog_init(dev, sde_kms->core_rev);
 	if (IS_ERR_OR_NULL(sde_kms->catalog)) {
@@ -3713,7 +3702,6 @@ static int sde_kms_hw_init(struct msm_kms *kms)
 		sde_power_resource_enable(&priv->phandle,
 						sde_kms->core_client, false);
 	}
-
 	return 0;
 
 genpd_err:
@@ -3786,4 +3774,30 @@ int sde_kms_handle_recovery(struct drm_encoder *encoder)
 {
 	SDE_EVT32(DRMID(encoder), MSM_ENC_ACTIVE_REGION);
 	return sde_encoder_wait_for_event(encoder, MSM_ENC_ACTIVE_REGION);
+}
+
+void sde_kms_trigger_early_wakeup(struct sde_kms *sde_kms,
+		struct drm_crtc *crtc)
+{
+	struct msm_drm_private *priv;
+	struct drm_encoder *drm_enc;
+
+	if (!sde_kms || !crtc) {
+		SDE_ERROR("invalid argument sde_kms %pK crtc %pK\n",
+			sde_kms, crtc);
+		return;
+	}
+
+	priv = sde_kms->dev->dev_private;
+
+	SDE_ATRACE_BEGIN("sde_kms_trigger_early_wakeup");
+	drm_for_each_encoder_mask(drm_enc, crtc->dev, crtc->state->encoder_mask)
+		sde_encoder_trigger_early_wakeup(drm_enc);
+
+	if (sde_kms->first_kickoff) {
+		sde_power_scale_reg_bus(&priv->phandle,
+				sde_kms->core_client,
+				VOTE_INDEX_HIGH, false);
+	}
+	SDE_ATRACE_END("sde_kms_trigger_early_wakeup");
 }

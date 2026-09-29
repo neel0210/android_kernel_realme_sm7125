@@ -641,7 +641,6 @@ static int bq2597x_enable_wdt(struct bq2597x *bq, bool enable) {
 }
 EXPORT_SYMBOL_GPL(bq2597x_enable_wdt);
 
-#if 0
 static int bq2597x_set_wdt(struct bq2597x *bq, int ms) {
 	int ret;
 	u8 val;
@@ -663,7 +662,6 @@ static int bq2597x_set_wdt(struct bq2597x *bq, int ms) {
 	return ret;
 }
 EXPORT_SYMBOL_GPL(bq2597x_set_wdt);
-#endif
 
 static int bq2597x_enable_batovp(struct bq2597x *bq, bool enable) {
 	int ret;
@@ -1234,7 +1232,6 @@ static int bq2597x_set_alarm_int_mask(struct bq2597x *bq, u8 mask) {
 }
 EXPORT_SYMBOL_GPL(bq2597x_set_alarm_int_mask);
 
-#if 0
 static int bq2597x_clear_alarm_int_mask(struct bq2597x *bq, u8 mask) {
 	int ret;
 	u8 val;
@@ -1250,9 +1247,7 @@ static int bq2597x_clear_alarm_int_mask(struct bq2597x *bq, u8 mask) {
 	return ret;
 }
 EXPORT_SYMBOL_GPL(bq2597x_clear_alarm_int_mask);
-#endif
 
-#if 0
 static int bq2597x_set_fault_int_mask(struct bq2597x *bq, u8 mask) {
 	int ret;
 	u8 val;
@@ -1268,9 +1263,7 @@ static int bq2597x_set_fault_int_mask(struct bq2597x *bq, u8 mask) {
 	return ret;
 }
 EXPORT_SYMBOL_GPL(bq2597x_set_fault_int_mask);
-#endif
 
-#if 0
 static int bq2597x_clear_fault_int_mask(struct bq2597x *bq, u8 mask) {
 	int ret;
 	u8 val;
@@ -1286,7 +1279,6 @@ static int bq2597x_clear_fault_int_mask(struct bq2597x *bq, u8 mask) {
 	return ret;
 }
 EXPORT_SYMBOL_GPL(bq2597x_clear_fault_int_mask);
-#endif
 
 static int bq2597x_set_sense_resistor(struct bq2597x *bq, int r_mohm) {
 	int ret;

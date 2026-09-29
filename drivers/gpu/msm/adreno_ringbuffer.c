@@ -1,4 +1,5 @@
 /* Copyright (c) 2002,2007-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022,2024 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -29,6 +30,7 @@
 #include "adreno_trace.h"
 
 #include "a3xx_reg.h"
+#include "a6xx_reg.h"
 #include "adreno_a5xx.h"
 
 #define RB_HOSTPTR(_rb, _pos) \
@@ -592,7 +594,7 @@ adreno_ringbuffer_addcmds(struct adreno_ringbuffer *rb,
 
 	if (gpudev->preemption_pre_ibsubmit &&
 			adreno_is_preemption_enabled(adreno_dev))
-		total_sizedwords += 27;
+		total_sizedwords += 31;
 
 	if (gpudev->preemption_post_ibsubmit &&
 			adreno_is_preemption_enabled(adreno_dev))
@@ -905,6 +907,16 @@ static void adreno_ringbuffer_set_constraint(struct kgsl_device *device,
 	}
 }
 
+static u32 a6xx_get_alwayson_context(u32 *cmds, u64 gpuaddr)
+{
+	cmds[0] = cp_type7_packet(CP_REG_TO_MEM, 3);
+	cmds[1] = A6XX_CP_ALWAYS_ON_CONTEXT_LO | (1 << 30) | (2 << 18);
+	cmds[2] = lower_32_bits(gpuaddr);
+	cmds[3] = upper_32_bits(gpuaddr);
+
+	return 4;
+}
+
 static inline int _get_alwayson_counter(struct adreno_device *adreno_dev,
 		unsigned int *cmds, uint64_t gpuaddr)
 {
@@ -921,6 +933,8 @@ static inline int _get_alwayson_counter(struct adreno_device *adreno_dev,
 		ADRENO_GPUREV(adreno_dev) <= ADRENO_REV_A530)
 		*p++ = adreno_getreg(adreno_dev,
 			ADRENO_REG_RBBM_ALWAYSON_COUNTER_LO);
+	else if (adreno_is_a6xx(adreno_dev))
+		*p++ = A6XX_CP_ALWAYS_ON_COUNTER_LO | (1 << 30) | (2 << 18);
 	else
 		*p++ = adreno_getreg(adreno_dev,
 			ADRENO_REG_RBBM_ALWAYSON_COUNTER_LO) |
@@ -1084,6 +1098,8 @@ int adreno_ringbuffer_submitcmd(struct adreno_device *adreno_dev,
 
 	if (test_bit(CMDOBJ_PROFILE, &cmdobj->priv)) {
 		kernel_profiling = true;
+		if (adreno_is_a6xx(adreno_dev))
+			dwords += 8;
 		dwords += 6;
 		if (!ADRENO_LEGACY_PM4(adreno_dev))
 			dwords += 2;
@@ -1127,6 +1143,11 @@ int adreno_ringbuffer_submitcmd(struct adreno_device *adreno_dev,
 			adreno_dev->profile_buffer.gpuaddr +
 			ADRENO_DRAWOBJ_PROFILE_OFFSET(cmdobj->profile_index,
 				started));
+		if (adreno_is_a6xx(adreno_dev))
+			cmds += a6xx_get_alwayson_context(cmds,
+				adreno_dev->profile_buffer.gpuaddr +
+				ADRENO_DRAWOBJ_PROFILE_OFFSET(cmdobj->profile_index,
+					ctx_start));
 	}
 
 	/*
@@ -1175,6 +1196,11 @@ int adreno_ringbuffer_submitcmd(struct adreno_device *adreno_dev,
 			cmds += gpudev->preemption_yield_enable(cmds);
 
 	if (kernel_profiling) {
+		if (adreno_is_a6xx(adreno_dev))
+			cmds += a6xx_get_alwayson_context(cmds,
+				adreno_dev->profile_buffer.gpuaddr +
+				ADRENO_DRAWOBJ_PROFILE_OFFSET(cmdobj->profile_index,
+					ctx_end));
 		cmds += _get_alwayson_counter(adreno_dev, cmds,
 			adreno_dev->profile_buffer.gpuaddr +
 			ADRENO_DRAWOBJ_PROFILE_OFFSET(cmdobj->profile_index,
