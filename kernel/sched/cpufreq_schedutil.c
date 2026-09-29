@@ -941,8 +941,8 @@ static void sugov_tunables_restore(struct cpufreq_policy *policy)
 	tunables->pl = cached->pl;
 	tunables->hispeed_load = cached->hispeed_load;
 	tunables->hispeed_freq = cached->hispeed_freq;
-	tunables->up_rate_limit_us = cached->up_rate_limit_us;
-	tunables->down_rate_limit_us = cached->down_rate_limit_us;
+	tunables->up_rate_limit_us = cached->up_rate_limit_us ? cached->up_rate_limit_us : 500;
+	tunables->down_rate_limit_us = cached->down_rate_limit_us ? cached->down_rate_limit_us : 20000;
 	update_min_rate_limit_ns(sg_policy);
 }
 
@@ -988,10 +988,8 @@ static int sugov_init(struct cpufreq_policy *policy)
 		goto stop_kthread;
 	}
 
-	tunables->up_rate_limit_us =
-				cpufreq_policy_transition_delay_us(policy);
-	tunables->down_rate_limit_us =
-				cpufreq_policy_transition_delay_us(policy);
+	tunables->up_rate_limit_us = 500;
+	tunables->down_rate_limit_us = 20000;
 	tunables->hispeed_load = DEFAULT_HISPEED_LOAD;
 	tunables->hispeed_freq = 0;
 
