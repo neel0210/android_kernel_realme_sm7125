@@ -11,7 +11,7 @@ KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-Itachi}"
 KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-Konoha}"
 ANYKERNEL3_DIR="${SRC}/AnyKernel3"
 DEVICE="RMX2061"
-VERSION="$(git -C "$SRC" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+VERSION="${GITHUB_REF_NAME:-$(git -C "$SRC" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)}"
 KERNEL_DEFCONFIG="atoll_defconfig"
 LOG_FILE="${SRC}/build.log"
 COMPILATION_LOG="${SRC}/compilation.log"
@@ -176,7 +176,8 @@ do_clean() {
 # ── KernelSU ──────────────────────────────────────────────────────
 setup_ksu() {
     log "Setting up KernelSU..."
-    if [[ ! -d "${SRC}/KernelSU" ]]; then
+    if [[ ! -d "${SRC}/KernelSU" || ! -e "${SRC}/drivers/kernelsu" ]]; then
+        rm -rf "${SRC}/KernelSU" "${SRC}/drivers/kernelsu"
         curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
     fi
     ok "KernelSU setup complete"
@@ -284,7 +285,9 @@ main() {
     rm -f "${SRC}"/*.zip
 
     # KernelSU
-    [[ "$KSU" -eq 1 ]] && setup_ksu
+    if [[ "$KSU" -eq 1 ]] || grep -q "CONFIG_KSU=y" "${SRC}/arch/arm64/configs/${KERNEL_DEFCONFIG}"; then
+        setup_ksu
+    fi
 
     # Build
     local start end
