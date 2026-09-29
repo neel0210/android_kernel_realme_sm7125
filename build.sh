@@ -195,7 +195,7 @@ do_build() {
     echo -e "  └─────────────────────────────────────┘${nocol}"
     echo ""
 
-    make -C "$SRC" "$KERNEL_DEFCONFIG" O=out
+    make -C "$SRC" "$KERNEL_DEFCONFIG" O=out ARCH=arm64 CC=clang
 
     if ! make -C "$SRC" -j"$JOBS" O=out \
             ARCH=arm64 \
@@ -213,7 +213,7 @@ do_build() {
 # ── Verify ────────────────────────────────────────────────────────
 verify_build() {
     local boot="${SRC}/out/arch/arm64/boot"
-    for img in Image.gz dtbo.img dtb.img; do
+    for img in Image.gz dtb.img; do
         [[ -f "${boot}/${img}" ]] || die "${img} not found — build failed"
     done
     ok "All boot images verified"
@@ -228,8 +228,8 @@ do_package() {
     fi
 
     cp "${SRC}/out/arch/arm64/boot/Image.gz"  "$ANYKERNEL3_DIR/"
-    cp "${SRC}/out/arch/arm64/boot/dtbo.img"   "$ANYKERNEL3_DIR/"
     cp "${SRC}/out/arch/arm64/boot/dtb.img"    "$ANYKERNEL3_DIR/"
+    rm -f "$ANYKERNEL3_DIR/dtbo.img"
 
     local prefix="Arise-Again"
     [[ "$KSU" -eq 1 ]] && prefix="${prefix}-KSU"
