@@ -130,3 +130,5 @@ kernel/configs/android-*.cfg
 /clang/
 *.zip
 *.log
+/KernelSU/
+/drivers/kernelsu

@@ -167,7 +167,6 @@ setup_ccache() {
 do_clean() {
     log "Cleaning build tree..."
     rm -rf "${SRC}/out/arch/arm64/boot/Image.gz"
-    rm -rf "${SRC}/KernelSU" "${SRC}/drivers/kernelsu"
     make -C "$SRC" clean 2>/dev/null || true
     make -C "$SRC" mrproper 2>/dev/null || true
     rm -f "${SRC}"/*.log
@@ -177,12 +176,9 @@ do_clean() {
 # ── KernelSU ──────────────────────────────────────────────────────
 setup_ksu() {
     log "Setting up KernelSU..."
-    curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
-    if [[ -f "${SRC}/KSU.patch" ]]; then
-        rm -f "${SRC}/KSU.patch"
+    if [[ ! -d "${SRC}/KernelSU" ]]; then
+        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
     fi
-    wget -q "https://raw.githubusercontent.com/neel0210/patches/main/KSU.patch" -O "${SRC}/KSU.patch"
-    git -C "$SRC" apply ./KSU.patch || warn "KSU patch may already be applied"
     ok "KernelSU setup complete"
 }
 
